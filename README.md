@@ -99,7 +99,7 @@ Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri
 | Embedding | Google Gemini — gemini-embedding-001 | Semantic embedding Bahasa Indonesia |
 | Vector Database | ChromaDB | Persistent local vector store |
 | LLM | Groq — Llama 3.3 70B Versatile | Answer synthesis |
-| Runtime | Python 3.12 | |
+| Runtime | Python 3.12.3 | |
 
 ---
 
@@ -126,7 +126,7 @@ rag-mandiri/
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12.3
 - Google Gemini API key — [ai.google.dev](https://ai.google.dev)
 - Groq API key — [console.groq.com](https://console.groq.com)
 
