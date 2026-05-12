@@ -1,0 +1,7 @@
+sulthon/
+venv/
+.env
+__pycache__/
+vectorstore/
+uploads/
+*.pyc
