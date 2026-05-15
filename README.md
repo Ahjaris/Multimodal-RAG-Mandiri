@@ -43,24 +43,24 @@ Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri
 │  PDF Upload                                                     │
 │      │                                                          │
 │      ▼                                                          │
-│  parser.py ──── PyMuPDF ──────► Teks per halaman               │
+│  parser.py ──── PyMuPDF ──────► Teks per halaman                |
 │      │                                                          │
-│      ├──── Groq Vision ────────► Deskripsi gambar/chart        │
+│      ├──── Groq Vision ────────► Deskripsi gambar/chart         |
 │      │     (llama-3.2-11b)                                      │
 │      │                                                          │
-│      └──── Manual Injection ───► Deskripsi infografis kompleks │
+│      └──── Manual Injection ───► Deskripsi infografis kompleks  |
 │                                  (hal. 8 & 9)                   │
 │      │                                                          │
 │      ▼                                                          │
-│  ingest.py ─── LangChain ──────► RecursiveCharacterTextSplitter│
+│  ingest.py ─── LangChain ──────► RecursiveCharacterTextSplitter |
 │                TextSplitter      chunk_size=1000, overlap=200   │
 │      │                                                          │
 │      ▼                                                          │
-│  Gemini Embedding ─────────────► Vector (1536 dim)             │
+│  Gemini Embedding ─────────────► Vector (1536 dim)              |
 │  (gemini-embedding-001)                                         │
 │      │                                                          │
 │      ▼                                                          │
-│  ChromaDB ─────────────────────► Persistent vector store       │
+│  ChromaDB ─────────────────────► Persistent vector store        |
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
@@ -69,11 +69,11 @@ Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri
 │  User Question                                                  │
 │      │                                                          │
 │      ▼                                                          │
-│  Gemini Embedding ─────────────► Query vector                  │
+│  Gemini Embedding ─────────────► Query vector                   |
 │      │                                                          │
 │      ▼                                                          │
-│  ChromaDB ─────────────────────► Top-K similar chunks          │
-│  Similarity Search               + metadata (source_pages)     │
+│  ChromaDB ─────────────────────► Top-K similar chunks           |
+│  Similarity Search               + metadata (source_pages)      |
 │      │                                                          │
 │      ▼                                                          │
 │  LangChain LCEL Chain                                           │
