@@ -99,7 +99,7 @@ Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri
 | Embedding | Google Gemini — gemini-embedding-001 | Semantic embedding Bahasa Indonesia |
 | Vector Database | ChromaDB | Penyimpanan vector lokal yang persisten |
 | LLM | Groq — Llama 3.3 70B Versatile | Pembuatan jawaban |
-| Bahasa Pemrograman | Python 3.12 | |
+| Bahasa Pemrograman | Python 3.12 | | Bahasa utama untuk pengembangan sistem |
 
 ---
 
@@ -118,8 +118,8 @@ rag-mandiri/
 ├── uploads/            # File PDF yang diupload (dibuat otomatis)
 ├── .env                # API key (tidak di-commit ke version control)
 ├── .env.example        # Template environment variables
-├── .gitignore
-└── requirements.txt
+├── .gitignore          # Daftar file/folder yang diabaikan Git
+└── requirements.txt    # Daftar dependency Python project
 ```
 
 ---
