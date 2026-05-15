@@ -136,19 +136,19 @@ rag-mandiri/
 
 **1. Clone repository**
 ```bash
-git clone https://github.com/username/rag-mandiri.git
-cd rag-mandiri
+git clone https://github.com/Ahjaris/Multimodal-RAG-Mandiri.git
+cd Multimodal-RAG-Mandiri
 ```
 
 **2. Buat dan aktifkan virtual environment**
 ```bash
-python -m venv venv
+python -m venv nama_venv
 
 # Windows
-venv\Scripts\activate
+nama_venv\Scripts\activate
 
 # Mac/Linux
-source venv/bin/activate
+source nama_venv/bin/activate
 ```
 
 **3. Install semua dependensi**
@@ -355,7 +355,7 @@ Halaman 8 (alur penanganan pengaduan) dan halaman 9 (daftar saluran pengaduan) m
 
 **Gemini untuk Embedding, Groq untuk LLM**
 
-Gemini `gemini-embedding-001` dipilih untuk embedding karena kualitas semantic search-nya baik untuk Bahasa Indonesia. Groq `llama-3.3-70b-versatile` dipilih untuk LLM karena gratis, cepat, dan memiliki rate limit yang wajar — cocok untuk keperluan pengembangan dan demo.
+Gemini `gemini-embedding-001` dipilih untuk embedding karena kualitas semantic search-nya baik untuk Bahasa Indonesia. Groq `llama-3.3-70b-versatile` dipilih untuk LLM karena gratis, cepat, dan memiliki rate limit yang wajar sehingga cocok untuk keperluan pengembangan dan demo.
 
 **Chunk Size 1000 dengan Overlap 200**
 
