@@ -1,6 +1,10 @@
-# Layout Aware Text Extraction
+# Multimodal RAG — Bank Mandiri 2025
 
-Pipeline ekstraksi teks berbasis layout yang mampu membaca teks dari gambar, mempertahankan posisi teks, memperkirakan gaya visual seperti ukuran font, warna teks, warna background, alignment, dan ketebalan font, lalu menghasilkan output HTML interaktif yang dapat diedit kembali melalui browser.
+Pipeline **Retrieval Augmented Generation (RAG)** berbasis REST API yang mampu memproses dokumen PDF multimodal, yaitu dokumen yang berisi teks, gambar, chart, tabel, dan infografis. Sistem ini membangun knowledge base dari dokumen PDF, menyimpan representasi vektor ke ChromaDB, lalu menjawab pertanyaan pengguna berdasarkan konteks dokumen yang paling relevan.
+
+Project ini menggunakan **PyMuPDF** untuk ekstraksi teks dan gambar dari PDF, **Groq Vision** untuk mendeskripsikan konten visual, **Google Gemini Embedding** untuk membuat embedding teks, **ChromaDB** sebagai vector database lokal, dan **Groq Llama 3.3 70B** sebagai LLM untuk menghasilkan jawaban akhir.
+
+---
 
 ## Daftar Isi
 
@@ -11,11 +15,9 @@ Pipeline ekstraksi teks berbasis layout yang mampu membaca teks dari gambar, mem
 - [Struktur Project](#struktur-project)
 - [Prasyarat](#prasyarat)
 - [Instalasi](#instalasi)
-- [Konfigurasi](#konfigurasi)
-- [Menjalankan Pipeline](#menjalankan-pipeline)
-- [Parameter CLI](#parameter-cli)
-- [Output Project](#output-project)
-- [Format JSON Metadata](#format-json-metadata)
+- [Konfigurasi Environment](#konfigurasi-environment)
+- [Menjalankan Aplikasi](#menjalankan-aplikasi)
+- [Referensi API](#referensi-api)
 - [Alur Kerja Program](#alur-kerja-program)
 - [Penjelasan Modul Kode](#penjelasan-modul-kode)
 - [Keputusan Desain](#keputusan-desain)
@@ -25,135 +27,104 @@ Pipeline ekstraksi teks berbasis layout yang mampu membaca teks dari gambar, mem
 
 ## Gambaran Umum
 
-Project ini dibuat untuk melakukan **layout-aware text extraction** dari gambar. Sistem tidak hanya membaca teks menggunakan OCR, tetapi juga mencoba mempertahankan informasi visual dari gambar asli.
+Sistem ini dibuat untuk melakukan tanya jawab berbasis dokumen PDF **Laporan Bank Mandiri 2025**. Pengguna dapat mengunggah file PDF melalui endpoint API, kemudian sistem akan melakukan proses ingestion untuk mengekstrak teks, mendeskripsikan gambar, melakukan chunking, membuat embedding, dan menyimpan data ke ChromaDB.
 
-Informasi visual yang dipertahankan antara lain:
+Setelah proses ingestion selesai, pengguna dapat mengirim pertanyaan melalui endpoint `/query`. Sistem akan mencari chunk dokumen yang paling relevan menggunakan similarity search, menyusun chunk tersebut sebagai context, lalu menghasilkan jawaban menggunakan LLM.
 
-- isi teks,
-- posisi teks pada gambar,
-- ukuran area teks,
-- confidence hasil OCR,
-- ukuran font hasil estimasi,
-- warna teks,
-- warna background di sekitar teks,
-- alignment teks,
-- dan ketebalan font.
+Output jawaban dilengkapi dengan:
 
-Hasil utama dari pipeline ini adalah file HTML interaktif. Pada file HTML tersebut, gambar digunakan sebagai background, lalu teks hasil OCR diletakkan kembali sesuai posisi yang terdeteksi. Setiap teks bersifat `contenteditable`, sehingga pengguna dapat mengeditnya langsung melalui browser.
-
-Selain HTML, pipeline juga menghasilkan file JSON metadata yang menyimpan data detail dari setiap teks hasil OCR. JSON ini berguna untuk debugging, analisis hasil ekstraksi, atau pengembangan output lanjutan seperti export ke PowerPoint, PDF, atau editor visual.
+- pertanyaan pengguna,
+- jawaban berdasarkan dokumen,
+- daftar halaman sumber,
+- jumlah chunk yang digunakan.
 
 ---
 
 ## Kemampuan Utama
 
-Kemampuan utama dari project ini:
+Kemampuan utama project ini:
 
-- Membaca gambar dari folder input atau dari satu file gambar.
-- Mendukung format gambar `.jpg`, `.jpeg`, `.png`, `.bmp`, dan `.webp`.
-- Melakukan preprocessing gambar sebelum OCR.
-- Melakukan peningkatan kontras menggunakan CLAHE.
-- Mendukung OCR menggunakan PaddleOCR dan EasyOCR.
-- Menggunakan EasyOCR sebagai fallback jika PaddleOCR gagal.
-- Melakukan koreksi teks hasil OCR.
-- Menghapus noise seperti teks logo atau teks dengan kualitas rendah.
-- Menggabungkan teks yang berada pada satu baris.
-- Menghapus duplikasi hasil OCR.
-- Mengestimasi ukuran font berdasarkan bounding box.
-- Mengestimasi warna teks menggunakan clustering warna.
-- Mengestimasi warna background untuk cover teks asli.
-- Mengestimasi alignment teks.
-- Mengestimasi ketebalan font.
-- Menghasilkan HTML interaktif yang dapat diedit.
-- Menghasilkan JSON metadata untuk setiap gambar.
-- Menghasilkan file debug berupa bounding box dan mask jika mode debug aktif.
+- Upload dokumen PDF melalui REST API.
+- Mengekstrak teks dari setiap halaman PDF.
+- Mengekstrak gambar dari PDF menggunakan PyMuPDF.
+- Mendeskripsikan gambar, chart, tabel, dan infografis menggunakan Groq Vision.
+- Menambahkan deskripsi manual untuk halaman infografis kompleks.
+- Memotong dokumen menjadi chunk menggunakan `RecursiveCharacterTextSplitter`.
+- Membuat embedding chunk menggunakan `gemini-embedding-001`.
+- Menyimpan chunk, embedding, dan metadata halaman ke ChromaDB.
+- Melakukan semantic search terhadap pertanyaan pengguna.
+- Menjawab pertanyaan menggunakan LangChain LCEL.
+- Mengembalikan metadata halaman sumber pada setiap jawaban.
 
 ---
 
 ## Arsitektur Pipeline
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│                        INPUT IMAGE                           │
-│                                                              │
-│  Gambar dari folder input/ atau satu file gambar             │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    IMAGE PREPROCESSING                       │
-│                                                              │
-│  - Resize / upscale jika gambar terlalu kecil                │
-│  - Konversi BGR ke HSV                                       │
-│  - Peningkatan kontras menggunakan CLAHE                     │
-│  - Simpan gambar sementara ke output/_tmp/                   │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                         OCR ENGINE                           │
-│                                                              │
-│  PaddleOCR / EasyOCR                                         │
-│  - Deteksi bounding box teks                                 │
-│  - Ekstraksi isi teks                                        │
-│  - Confidence score                                          │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    TEXT CORRECTION                           │
-│                                                              │
-│  - Normalisasi whitespace                                    │
-│  - Perbaikan spasi antar kata                                │
-│  - Koreksi kata yang sering salah hasil OCR                  │
-│  - Replacement berbasis pola                                 │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                  FILTER, DEDUPLICATE, MERGE                  │
-│                                                              │
-│  - Filter teks kosong / noise                                │
-│  - Filter area logo kanan atas                               │
-│  - Filter kontras rendah                                     │
-│  - Hapus teks duplikat                                       │
-│  - Gabungkan teks dalam satu baris                           │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                      STYLE ESTIMATION                        │
-│                                                              │
-│  - Estimasi font size                                        │
-│  - Estimasi font weight                                      │
-│  - Estimasi warna teks                                       │
-│  - Estimasi warna cover background                           │
-│  - Estimasi alignment                                        │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    BACKGROUND PROCESSING                     │
-│                                                              │
-│  Mode CSS:                                                   │
-│  - Gambar asli digunakan sebagai background                  │
-│  - Teks asli ditutup dengan elemen cover CSS                 │
-│                                                              │
-│  Mode Inpaint:                                               │
-│  - Mask teks dibuat dari elemen OCR                          │
-│  - Teks asli dihapus menggunakan OpenCV inpainting           │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                         OUTPUT                               │
-│                                                              │
-│  - HTML interaktif                                           │
-│  - JSON metadata                                             │
-│  - Background image                                          │
-│  - Results summary                                           │
-│  - Debug image dan mask jika debug aktif                     │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     INGESTION PIPELINE                          │
+│                                                                 │
+│  Upload PDF melalui endpoint /ingest                            │
+│      │                                                          │
+│      ▼                                                          │
+│  main.py                                                        │
+│  - Validasi file PDF                                            │
+│  - Simpan file ke folder uploads/                               │
+│      │                                                          │
+│      ▼                                                          │
+│  ingest.py                                                      │
+│  - Memanggil parse_pdf() dari parser.py                         │
+│      │                                                          │
+│      ▼                                                          │
+│  parser.py ───── PyMuPDF ─────────► Teks per halaman            │
+│      │                                                          │
+│      ├──── Groq Vision ───────────► Deskripsi gambar/chart      │
+│      │     llama-3.2-11b-vision-preview                         │
+│      │                                                          │
+│      └──── Manual Injection ─────► Deskripsi halaman kompleks   │
+│                                    Halaman 8 dan 9              │
+│      │                                                          │
+│      ▼                                                          │
+│  RecursiveCharacterTextSplitter                                 │
+│  - chunk_size = 1000                                            │
+│  - chunk_overlap = 200                                          │
+│      │                                                          │
+│      ▼                                                          │
+│  Gemini Embedding                                               │
+│  - models/gemini-embedding-001                                  │
+│      │                                                          │
+│      ▼                                                          │
+│  ChromaDB                                                       │
+│  - Persistent vector store                                      │
+│  - Metadata halaman sumber                                      │
+└─────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────┐
+│                       QUERY PIPELINE                            │
+│                                                                 │
+│  Pertanyaan pengguna melalui endpoint /query                    │
+│      │                                                          │
+│      ▼                                                          │
+│  query.py                                                       │
+│  - Embed pertanyaan menggunakan Gemini Embedding                │
+│      │                                                          │
+│      ▼                                                          │
+│  ChromaDB Similarity Search                                     │
+│  - Mengambil top-K chunk paling relevan                         │
+│  - Mengambil metadata halaman sumber                            │
+│      │                                                          │
+│      ▼                                                          │
+│  LangChain LCEL Chain                                           │
+│  PromptTemplate | ChatGroq | StrOutputParser                    │
+│      │                                                          │
+│      ▼                                                          │
+│  Response                                                       │
+│  - question                                                     │
+│  - answer                                                       │
+│  - source_pages                                                 │
+│  - chunks_used                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -162,64 +133,53 @@ Kemampuan utama dari project ini:
 
 | Komponen | Teknologi | Keterangan |
 |---|---|---|
-| Bahasa Pemrograman | Python | Bahasa utama pipeline |
-| OCR Engine Utama | PaddleOCR | Digunakan secara default untuk ekstraksi teks |
-| OCR Fallback | EasyOCR | Digunakan jika PaddleOCR gagal atau dipilih manual |
-| Image Processing | OpenCV | Preprocessing, mask, inpainting, color detection |
-| Numerical Processing | NumPy | Operasi array, perhitungan style, dan clustering warna |
-| Output Editor | HTML, CSS, JavaScript | Menampilkan hasil ekstraksi dalam bentuk editor interaktif |
-| Data Output | JSON | Menyimpan metadata hasil ekstraksi teks |
-| CLI | argparse | Menjalankan pipeline melalui terminal |
+| API Framework | FastAPI | Membuat REST API dan Swagger UI otomatis |
+| Request Model | Pydantic | Validasi request dan response API |
+| PDF Parser | PyMuPDF / fitz | Ekstraksi teks dan gambar dari PDF |
+| Vision Model | Groq Llama 3.2 11B Vision Preview | Mendeskripsikan gambar, chart, tabel, dan infografis |
+| Embedding Model | Google Gemini `gemini-embedding-001` | Membuat vector embedding dari teks |
+| Vector Database | ChromaDB | Penyimpanan vector lokal secara persisten |
+| Text Splitter | LangChain Text Splitters | Memotong teks menjadi chunk |
+| LLM | Groq Llama 3.3 70B Versatile | Menghasilkan jawaban berdasarkan context |
+| Orchestration | LangChain LCEL | Pipeline `PromptTemplate | ChatGroq | StrOutputParser` |
+| Environment | python-dotenv | Membaca API key dari file `.env` |
+| Bahasa Pemrograman | Python | Bahasa utama project |
 
 ---
 
 ## Struktur Project
 
 ```text
-layout-aware-text-extraction/
-├── input/
-│   └── ekosistem.jpg
+rag-mandiri/
+├── app/
+│   ├── __init__.py
+│   ├── config.py       # Konfigurasi API key, path, collection, dan chunking
+│   ├── ingest.py       # Pipeline ingestion: parsing, chunking, embedding, simpan ke ChromaDB
+│   ├── main.py         # FastAPI app dan definisi endpoint
+│   ├── parser.py       # Parsing PDF, ekstraksi teks, deskripsi gambar, manual injection
+│   └── query.py        # Pipeline query: embedding pertanyaan, retrieval, LLM answer
 │
-├── output/
-│   ├── _tmp/
-│   │   └── ekosistem_ocr_input.png
-│   │
-│   ├── ekosistem_background.png
-│   ├── ekosistem_css_cover.html
-│   ├── ekosistem_data.json
-│   ├── ekosistem_debug.png
-│   ├── ekosistem_mask.png
-│   └── results.json
-│
-├── sul/
-│   ├── Include/
-│   ├── Lib/
-│   ├── Scripts/
-│   ├── share/
-│   └── pyvenv.cfg
-│
-├── .gitignore
-├── pipeline.py
-└── requirements.txt
+├── uploads/            # Folder penyimpanan PDF yang diupload
+├── vectorstore/        # Folder penyimpanan ChromaDB persistent
+├── .env                # API key, tidak boleh di-commit ke GitHub
+├── .env.example        # Contoh konfigurasi environment
+├── .gitignore          # File/folder yang diabaikan Git
+├── requirements.txt    # Daftar dependency Python
+└── README.md           # Dokumentasi project
 ```
 
-Keterangan:
+Keterangan folder penting:
 
-| File / Folder | Keterangan |
+| File / Folder | Fungsi |
 |---|---|
-| `input/` | Folder untuk menyimpan gambar yang akan diproses |
-| `output/` | Folder hasil keluaran pipeline |
-| `output/_tmp/` | Folder sementara untuk menyimpan gambar hasil preprocessing sebelum OCR |
-| `*_background.png` | Background yang digunakan pada file HTML |
-| `*_css_cover.html` | Output utama berupa HTML interaktif |
-| `*_data.json` | Metadata detail hasil ekstraksi teks dari satu gambar |
-| `*_debug.png` | Gambar debug berisi bounding box teks |
-| `*_mask.png` | Mask area teks yang terdeteksi |
-| `results.json` | Ringkasan output dari seluruh gambar yang diproses |
-| `sul/` | Virtual environment Python |
-| `pipeline.py` | File utama pipeline |
-| `requirements.txt` | Daftar dependency Python |
-| `.gitignore` | File untuk mengecualikan folder/file tertentu dari Git |
+| `app/config.py` | Menyimpan konfigurasi utama project |
+| `app/main.py` | Berisi FastAPI app dan endpoint `/`, `/ingest`, `/query` |
+| `app/parser.py` | Mengekstrak teks dan gambar dari PDF |
+| `app/ingest.py` | Mengubah PDF menjadi chunk dan menyimpannya ke ChromaDB |
+| `app/query.py` | Mengambil chunk relevan dan menghasilkan jawaban |
+| `uploads/` | Menyimpan PDF yang diupload user |
+| `vectorstore/` | Menyimpan database vector ChromaDB |
+| `.env` | Menyimpan `GOOGLE_API_KEY` dan `GROQ_API_KEY` |
 
 ---
 
@@ -227,14 +187,11 @@ Keterangan:
 
 Sebelum menjalankan project, pastikan sudah tersedia:
 
-- Python 3.10 atau lebih baru
-- pip
-- Virtual environment Python
-- OpenCV
-- NumPy
-- PaddleOCR atau EasyOCR
-
-Project ini dapat dijalankan di Windows, Linux, maupun MacOS. Untuk Windows, disarankan menggunakan PowerShell atau terminal Visual Studio Code.
+- Python 3.10 atau lebih baru.
+- Google Gemini API key.
+- Groq API key.
+- pip.
+- Virtual environment Python.
 
 ---
 
@@ -243,14 +200,14 @@ Project ini dapat dijalankan di Windows, Linux, maupun MacOS. Untuk Windows, dis
 ### 1. Clone repository
 
 ```bash
-git clone https://github.com/username/layout-aware-text-extraction.git
-cd layout-aware-text-extraction
+git clone https://github.com/username/rag-mandiri.git
+cd rag-mandiri
 ```
 
 ### 2. Buat virtual environment
 
 ```bash
-python -m venv sul
+python -m venv venv
 ```
 
 ### 3. Aktifkan virtual environment
@@ -258,13 +215,13 @@ python -m venv sul
 Windows:
 
 ```bash
-sul\Scripts\activate
+venv\Scripts\activate
 ```
 
 Mac/Linux:
 
 ```bash
-source sul/bin/activate
+source venv/bin/activate
 ```
 
 ### 4. Install dependency
@@ -276,908 +233,711 @@ pip install -r requirements.txt
 Contoh isi `requirements.txt`:
 
 ```txt
-opencv-python
-numpy
-easyocr
-paddleocr
-paddlepaddle
+fastapi
+uvicorn
+python-dotenv
+python-multipart
+pymupdf
+groq
+chromadb
+google-genai
+langchain
+langchain-core
+langchain-groq
+langchain-text-splitters
+pydantic
 ```
-
-Jika hanya ingin menggunakan EasyOCR, dependency PaddleOCR dapat disesuaikan.
 
 ---
 
-## Konfigurasi
+## Konfigurasi Environment
 
-Konfigurasi utama berada di bagian konstanta pada awal file `pipeline.py`.
+Buat file `.env` di root project.
+
+```env
+GOOGLE_API_KEY=isi_google_api_key_kamu
+GROQ_API_KEY=isi_groq_api_key_kamu
+```
+
+Contoh file `.env.example`:
+
+```env
+GOOGLE_API_KEY=
+GROQ_API_KEY=
+```
+
+Konfigurasi utama terdapat di `app/config.py`.
 
 ```python
-MIN_CONF = 0.38
-UPSCALE_IF_WIDTH_BELOW = 1600
-OCR_UPSCALE = 2.0
-FONT_FAMILY = '"Poppins","Montserrat","Trebuchet MS","Arial",sans-serif'
-LINE_HEIGHT = 1.12
-MIN_FONT_SIZE = 10
-MAX_FONT_SIZE = 90
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+VECTORSTORE_PATH = "./vectorstore"
+UPLOAD_PATH = "./uploads"
+COLLECTION_NAME = "mandiri_2025"
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
 ```
 
-Keterangan:
+Keterangan konfigurasi:
 
-| Konstanta | Fungsi |
+| Konfigurasi | Fungsi |
 |---|---|
-| `MIN_CONF` | Confidence minimum agar hasil OCR diterima |
-| `UPSCALE_IF_WIDTH_BELOW` | Batas lebar gambar untuk dilakukan upscale |
-| `OCR_UPSCALE` | Skala pembesaran gambar sebelum OCR |
-| `FONT_FAMILY` | Font default pada output HTML |
-| `LINE_HEIGHT` | Tinggi baris teks |
-| `MIN_FONT_SIZE` | Ukuran font minimum |
-| `MAX_FONT_SIZE` | Ukuran font maksimum untuk teks biasa |
-
-Konfigurasi area logo kanan atas:
-
-```python
-IGNORE_TOP_RIGHT_LOGO = True
-LOGO_X_START_RATIO = 0.78
-LOGO_Y_END_RATIO = 0.18
-MIN_LOCAL_CONTRAST = 18.0
-```
-
-Keterangan:
-
-| Konstanta | Fungsi |
-|---|---|
-| `IGNORE_TOP_RIGHT_LOGO` | Mengaktifkan filter area logo kanan atas |
-| `LOGO_X_START_RATIO` | Batas awal area logo berdasarkan rasio lebar gambar |
-| `LOGO_Y_END_RATIO` | Batas akhir area logo berdasarkan rasio tinggi gambar |
-| `MIN_LOCAL_CONTRAST` | Kontras minimum agar teks tidak dianggap noise |
+| `GOOGLE_API_KEY` | API key untuk Google Gemini Embedding |
+| `GROQ_API_KEY` | API key untuk Groq Vision dan ChatGroq |
+| `VECTORSTORE_PATH` | Lokasi penyimpanan ChromaDB |
+| `UPLOAD_PATH` | Lokasi penyimpanan PDF yang diupload |
+| `COLLECTION_NAME` | Nama collection di ChromaDB |
+| `CHUNK_SIZE` | Ukuran maksimal setiap chunk teks |
+| `CHUNK_OVERLAP` | Jumlah overlap antar chunk |
 
 ---
 
-## Menjalankan Pipeline
+## Menjalankan Aplikasi
 
-### 1. Menjalankan dengan input folder default
-
-Masukkan gambar ke folder `input/`, lalu jalankan:
+Pastikan folder `uploads/` sudah tersedia. Jika belum, buat folder tersebut:
 
 ```bash
-python pipeline.py
+mkdir uploads
 ```
 
-Secara default, program membaca gambar dari:
+Jalankan FastAPI server:
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+Jika berhasil, server akan berjalan di:
 
 ```text
-./input
+http://127.0.0.1:8000
 ```
 
-dan menyimpan hasil ke:
+Buka Swagger UI untuk mencoba API:
 
 ```text
-./output
-```
-
-### 2. Menjalankan dengan engine PaddleOCR
-
-```bash
-python pipeline.py --engine paddle
-```
-
-PaddleOCR adalah engine default.
-
-### 3. Menjalankan dengan engine EasyOCR
-
-```bash
-python pipeline.py --engine easyocr
-```
-
-### 4. Menjalankan dengan mode debug
-
-```bash
-python pipeline.py --debug
-```
-
-Mode debug akan menghasilkan file tambahan:
-
-```text
-output/nama_gambar_debug.png
-output/nama_gambar_mask.png
-```
-
-### 5. Membersihkan folder output sebelum proses
-
-```bash
-python pipeline.py --clean-output
-```
-
-Perintah ini akan menghapus folder `output/` lama, lalu membuat output baru dari awal.
-
-### 6. Menggunakan mode CSS cover
-
-```bash
-python pipeline.py --cover-mode css
-```
-
-Mode ini adalah mode default. Pada mode ini, gambar asli digunakan sebagai background, lalu teks asli ditutup menggunakan elemen cover CSS.
-
-### 7. Menggunakan mode inpaint
-
-```bash
-python pipeline.py --cover-mode inpaint
-```
-
-Mode ini mencoba menghapus teks asli dari gambar menggunakan OpenCV inpainting.
-
-### 8. Menjalankan dengan parameter lengkap
-
-```bash
-python pipeline.py --input ./input --output ./output --engine paddle --debug --clean-output --cover-mode css
+http://127.0.0.1:8000/docs
 ```
 
 ---
 
-## Parameter CLI
+## Referensi API
 
-| Parameter | Default | Pilihan | Keterangan |
-|---|---:|---|---|
-| `--input` | `./input` | path file/folder | Lokasi gambar input |
-| `--output` | `./output` | path folder | Lokasi penyimpanan output |
-| `--engine` | `paddle` | `paddle`, `easyocr` | OCR engine yang digunakan |
-| `--debug` | `False` | - | Menyimpan debug image dan mask |
-| `--clean-output` | `False` | - | Menghapus folder output sebelum proses |
-| `--cover-mode` | `css` | `css`, `inpaint` | Mode pembuatan background |
+### GET `/`
 
----
+Endpoint untuk mengecek apakah API aktif.
 
-## Output Project
-
-Setelah pipeline dijalankan, hasil akan disimpan di folder `output/`.
-
-Contoh output untuk gambar `ekosistem.jpg`:
-
-```text
-output/
-├── _tmp/
-│   └── ekosistem_ocr_input.png
-│
-├── ekosistem_background.png
-├── ekosistem_css_cover.html
-├── ekosistem_data.json
-├── ekosistem_debug.png
-├── ekosistem_mask.png
-└── results.json
-```
-
-Keterangan output:
-
-| File / Folder | Fungsi |
-|---|---|
-| `ekosistem_background.png` | Background yang digunakan dalam file HTML |
-| `ekosistem_css_cover.html` | Output utama berupa HTML interaktif |
-| `ekosistem_data.json` | Metadata detail semua teks hasil OCR pada gambar tersebut |
-| `ekosistem_debug.png` | Visualisasi bounding box teks, muncul jika `--debug` aktif |
-| `ekosistem_mask.png` | Mask area teks, muncul jika `--debug` aktif |
-| `results.json` | Ringkasan lokasi file output dari semua gambar |
-| `_tmp/` | Folder sementara untuk file gambar preprocessing sebelum OCR |
-
-Folder `_tmp` bukan output final. Folder ini digunakan untuk menyimpan gambar sementara hasil preprocessing, misalnya gambar yang sudah di-upscale atau ditingkatkan kontrasnya sebelum dibaca oleh OCR. Setelah proses selesai, folder `_tmp` boleh dihapus jika tidak diperlukan untuk debugging.
-
----
-
-## Format JSON Metadata
-
-Setiap gambar menghasilkan file JSON metadata dengan nama:
-
-```text
-nama_gambar_data.json
-```
-
-Contoh struktur JSON:
+**Response:**
 
 ```json
 {
-  "image": "ekosistem.jpg",
-  "width": 5734,
-  "height": 3200,
-  "elements": [
-    {
-      "text": "Ekosistem Inovasi Terintegrasi",
-      "x": 316,
-      "y": 259,
-      "w": 2898,
-      "h": 188,
-      "confidence": 0.971,
-      "font_size": 200,
-      "line_height": 1.12,
-      "font_weight": "700",
-      "color": "#24669f",
-      "cover_color": "#ffffff",
-      "align": "left",
-      "bg_lum": 255.0
-    }
-  ]
+  "status": "ok",
+  "message": "RAG API aktif"
 }
 ```
 
-Keterangan field utama:
+---
 
-| Field | Keterangan |
-|---|---|
-| `image` | Nama file gambar yang diproses |
-| `width` | Lebar gambar dalam pixel |
-| `height` | Tinggi gambar dalam pixel |
-| `elements` | Daftar teks yang berhasil diekstrak |
+### POST `/ingest`
 
-Keterangan field di dalam `elements`:
+Endpoint untuk mengupload dan memproses file PDF menjadi knowledge base.
 
-| Field | Keterangan |
-|---|---|
-| `text` | Isi teks hasil OCR |
-| `x` | Posisi teks dari sisi kiri gambar |
-| `y` | Posisi teks dari sisi atas gambar |
-| `w` | Lebar bounding box teks |
-| `h` | Tinggi bounding box teks |
-| `confidence` | Tingkat keyakinan hasil OCR |
-| `font_size` | Ukuran font hasil estimasi |
-| `line_height` | Tinggi baris teks |
-| `font_weight` | Ketebalan font |
-| `color` | Warna teks hasil estimasi dalam format HEX |
-| `cover_color` | Warna background untuk menutup teks asli |
-| `align` | Alignment teks |
-| `bg_lum` | Tingkat kecerahan background |
+**Request:**
 
-JSON metadata digunakan untuk:
+`multipart/form-data`
 
-1. **Debugging hasil OCR**  
-   Pengguna dapat mengecek apakah teks, posisi, warna, dan ukuran font sudah sesuai.
+| Field | Tipe | Keterangan |
+|---|---|---|
+| `file` | File | File PDF yang akan diproses |
 
-2. **Menyimpan hasil ekstraksi secara terstruktur**  
-   Hasil OCR tidak hanya tersimpan di HTML, tetapi juga tersedia dalam bentuk data.
+**Contoh response:**
 
-3. **Membandingkan hasil eksperimen**  
-   Misalnya membandingkan hasil sebelum dan sesudah mengubah rumus font size atau parameter filter.
-
-4. **Sumber data untuk pengembangan lanjutan**  
-   JSON dapat digunakan untuk membuat export ke PowerPoint, PDF, editor canvas, atau sistem layout reconstruction lainnya.
-
-Selain `nama_gambar_data.json`, program juga menghasilkan:
-
-```text
-results.json
+```json
+{
+  "status": "success",
+  "total_pages": 9,
+  "total_chunks": 41
+}
 ```
 
-File ini berisi ringkasan path output dari semua gambar yang berhasil diproses.
+**Error:**
+
+| Status Code | Penyebab |
+|---|---|
+| `400` | File yang diupload bukan PDF |
+
+**Proses yang terjadi pada endpoint `/ingest`:**
+
+1. FastAPI menerima file PDF dari user.
+2. Sistem mengecek apakah ekstensi file adalah `.pdf`.
+3. File disimpan ke folder `uploads/`.
+4. Fungsi `process_pdf()` dipanggil.
+5. PDF diparsing menggunakan `parse_pdf()`.
+6. Teks dan deskripsi gambar digabungkan per halaman.
+7. Teks dipotong menjadi chunk.
+8. Setiap chunk diubah menjadi embedding.
+9. Chunk, embedding, dan metadata halaman disimpan ke ChromaDB.
+10. API mengembalikan jumlah halaman dan jumlah chunk.
+
+---
+
+### POST `/query`
+
+Endpoint untuk mengirim pertanyaan berdasarkan dokumen yang sudah diingest.
+
+**Request body:**
+
+```json
+{
+  "question": "Apa saja saluran pengaduan yang disediakan Bank Mandiri?",
+  "top_k": 5
+}
+```
+
+| Field | Tipe | Default | Keterangan |
+|---|---|---:|---|
+| `question` | string | wajib | Pertanyaan pengguna |
+| `top_k` | integer | 5 | Jumlah chunk relevan yang diambil dari ChromaDB |
+
+**Contoh response:**
+
+```json
+{
+  "question": "Apa saja saluran pengaduan yang disediakan Bank Mandiri?",
+  "answer": "Bank Mandiri menyediakan beberapa saluran pengaduan, yaitu Mandiri Call 14000, akun X mandiricare dan @bankmandiri, WhatsApp MITA 0811-8414-000, website Bank Mandiri, Facebook, kantor cabang, email mandiricare@bankmandiri.co.id, Instagram @bankmandiri, dan surat resmi.",
+  "source_pages": [9],
+  "chunks_used": 5
+}
+```
+
+**Error:**
+
+| Status Code | Penyebab |
+|---|---|
+| `400` | Pertanyaan kosong |
+
+**Proses yang terjadi pada endpoint `/query`:**
+
+1. User mengirim pertanyaan.
+2. Sistem mengecek apakah pertanyaan kosong atau tidak.
+3. Pertanyaan diubah menjadi embedding menggunakan Gemini.
+4. ChromaDB mencari top-K chunk paling relevan.
+5. Chunk disusun menjadi context dengan format halaman sumber.
+6. Context dan pertanyaan dimasukkan ke prompt.
+7. ChatGroq menghasilkan jawaban.
+8. API mengembalikan jawaban, halaman sumber, dan jumlah chunk yang digunakan.
 
 ---
 
 ## Alur Kerja Program
 
-### 1. Membaca Input
-
-Program membaca input dari argumen:
-
-```bash
---input
-```
-
-Jika input berupa satu file gambar, hanya file tersebut yang diproses. Jika input berupa folder, program akan memproses semua gambar dengan ekstensi:
-
-```text
-.jpg, .jpeg, .png, .bmp, .webp
-```
-
-### 2. Preprocessing Gambar
-
-Fungsi utama:
-
-```python
-preprocess_for_ocr(img)
-```
-
-Tahapan preprocessing:
-
-1. Membaca ukuran gambar.
-2. Jika lebar gambar lebih kecil dari `UPSCALE_IF_WIDTH_BELOW`, gambar diperbesar.
-3. Gambar dikonversi dari BGR ke HSV.
-4. CLAHE diterapkan pada channel `V` atau brightness.
-5. Gambar dikonversi kembali dari HSV ke BGR.
-6. Gambar hasil preprocessing disimpan sementara ke folder `_tmp`.
-
-Tujuan preprocessing adalah meningkatkan kualitas gambar sebelum OCR, terutama pada gambar yang memiliki kontras rendah atau resolusi kecil.
-
-### 3. Menjalankan OCR
-
-Fungsi utama:
-
-```python
-run_ocr(img, out_dir, stem, engine)
-```
-
-Pipeline mendukung dua OCR engine:
-
-- PaddleOCR
-- EasyOCR
-
-Jika engine yang dipilih adalah `easyocr`, program langsung menjalankan EasyOCR.
-
-Jika engine yang dipilih adalah `paddle`, program mencoba menjalankan PaddleOCR terlebih dahulu. Jika PaddleOCR gagal, program akan otomatis fallback ke EasyOCR.
-
-Output awal OCR berbentuk data:
-
-```json
-{
-  "text": "Contoh Teks",
-  "x": 120,
-  "y": 80,
-  "w": 300,
-  "h": 45,
-  "confidence": 0.95
-}
-```
-
-### 4. Koreksi Teks OCR
-
-Fungsi utama:
-
-```python
-correct_text(text)
-```
-
-Tahapan koreksi teks:
-
-- Menghapus spasi berlebih.
-- Mengganti dash panjang menjadi dash biasa.
-- Memperbaiki spasi antara huruf kecil dan huruf besar.
-- Memperbaiki spasi antara angka dan huruf.
-- Menghapus spasi yang salah di sekitar tanda baca.
-- Mengganti kata yang sering salah terbaca oleh OCR.
-- Menggunakan pola replacement untuk teks tertentu.
-
-Contoh koreksi:
-
-```text
-Cehter  → Center
-Researc → Research
-Resourc → Resource
-profie  → profile
-Imoge   → Image
-Studic  → Studio
-```
-
-### 5. Filter Noise
-
-Fungsi utama:
-
-```python
-filter_noise(img, elements)
-```
-
-Tahap ini menghapus elemen teks yang dianggap noise.
-
-Elemen dapat dihapus jika:
-
-- teks kosong,
-- kualitas teks rendah,
-- berada di area logo kanan atas,
-- bounding box terlalu kecil,
-- kontras lokal rendah dan confidence OCR rendah.
-
-Tujuan tahap ini adalah mengurangi teks palsu, artefak, atau elemen visual yang salah terbaca sebagai teks.
-
-### 6. Deduplication
-
-Fungsi utama:
-
-```python
-deduplicate(elements)
-```
-
-Tahap ini menghapus elemen OCR yang terdeteksi ganda.
-
-Duplikasi dideteksi berdasarkan:
-
-- Intersection over Union atau IoU antar bounding box,
-- teks yang sama dengan posisi vertikal yang berdekatan.
-
-Jika ada dua elemen yang dianggap sama, program mempertahankan elemen dengan confidence atau area yang lebih baik.
-
-### 7. Merge Same Line
-
-Fungsi utama:
-
-```python
-merge_same_line(elements, img_w)
-```
-
-OCR sering memecah satu baris menjadi beberapa bagian. Fungsi ini menggabungkan elemen-elemen yang berada pada baris yang sama.
-
-Pertimbangan merge:
-
-- overlap vertikal,
-- jarak horizontal antar elemen,
-- tinggi rata-rata teks,
-- urutan posisi kiri ke kanan.
-
-Hasil akhirnya adalah satu elemen teks gabungan dengan bounding box baru.
-
-### 8. Estimasi Style
-
-Fungsi utama:
-
-```python
-enrich_style(img, elements)
-```
-
-Fungsi ini menambahkan informasi style visual ke setiap elemen teks.
-
-Style yang ditambahkan:
-
-- `font_size`,
-- `line_height`,
-- `font_weight`,
-- `color`,
-- `cover_color`,
-- `align`,
-- `bg_lum`.
-
-Contoh hasil:
-
-```json
-{
-  "text": "Services",
-  "x": 3565,
-  "y": 2240,
-  "w": 462,
-  "h": 138,
-  "confidence": 0.998,
-  "font_size": 90,
-  "line_height": 1.12,
-  "font_weight": "700",
-  "color": "#cae4ea",
-  "cover_color": "#013161",
-  "align": "center",
-  "bg_lum": 40.12
-}
-```
-
-### 9. Estimasi Ukuran Font
-
-Fungsi utama:
-
-```python
-estimate_font_size(el, img_w, img_h)
-```
-
-Ukuran font ditentukan berdasarkan tinggi bounding box dan jenis elemen teks.
-
-Kategori teks:
-
-1. **Hero title**  
-   Judul besar yang biasanya berada di area tengah gambar.
-
-2. **Top title**  
-   Judul yang berada di area atas gambar.
-
-3. **Teks biasa**  
-   Teks selain judul.
-
-Untuk judul besar, ukuran font dihitung lebih besar agar mendekati tampilan asli. Untuk top title, teks dibuat uppercase dan ukuran font diperbesar dari tinggi bounding box. Untuk teks biasa, ukuran font mengikuti tinggi bounding box dengan batas minimum dan maksimum.
-
-### 10. Estimasi Font Weight
-
-Fungsi utama:
-
-```python
-estimate_weight(el, bg_lum, img_w, img_h)
-```
-
-Fungsi ini menentukan ketebalan font.
-
-Jika teks merupakan hero title atau top title, maka font dibuat tebal:
-
-```text
-font_weight = 700
-```
-
-Kode juga memiliki daftar `heavy_keywords`:
-
-```python
-heavy_keywords = [
-    'talent development', 'cyber security', 'cloud computing',
-    'research center', 'human resource', 'services',
-]
-```
-
-Jika teks mengandung salah satu keyword tersebut, maka teks dianggap penting dan diberi `font_weight = 700`.
-
-Contohnya, teks `Services` pada JSON metadata memiliki nilai:
-
-```json
-"font_weight": "700"
-```
-
-Artinya teks tersebut akan ditampilkan lebih tebal di HTML.
-
-### 11. Estimasi Warna Teks
-
-Fungsi utama:
-
-```python
-estimate_text_color(crop, mask, el, img_h)
-```
-
-Warna teks diperkirakan menggunakan K-Means clustering dengan `k=2`.
-
-Alurnya:
-
-1. Area teks di-crop dari gambar.
-2. Pixel di dalam crop dikumpulkan.
-3. K-Means membagi pixel menjadi dua cluster warna.
-4. Cluster dengan jumlah pixel lebih sedikit diasumsikan sebagai warna teks.
-5. Warna BGR dikonversi menjadi HEX.
-
-Contoh:
-
-```json
-"color": "#24669f"
-```
-
-### 12. Estimasi Warna Cover Background
-
-Fungsi utama:
-
-```python
-estimate_cover_color(crop)
-```
-
-Warna cover background diestimasi dari border area crop. Program mengambil warna median dari bagian pinggir crop, lalu menggunakannya sebagai warna penutup teks asli.
-
-Contoh:
-
-```json
-"cover_color": "#ffffff"
-```
-
-Warna ini digunakan pada elemen cover di HTML.
-
-### 13. Mask dan Inpainting
-
-Fungsi utama:
-
-```python
-build_mask(img, elements)
-inpaint_background(img, mask)
-```
-
-Jika menggunakan mode `inpaint`, program akan:
-
-1. Membuat mask area teks berdasarkan elemen OCR.
-2. Memperlebar area mask menggunakan dilasi.
-3. Menghapus teks asli menggunakan OpenCV inpainting TELEA.
-4. Menyimpan hasilnya sebagai background baru.
-
-Jika menggunakan mode `css`, gambar asli tetap digunakan sebagai background dan teks asli ditutup menggunakan elemen CSS cover.
-
-### 14. Generate HTML
-
-Fungsi utama:
-
-```python
-generate_html(elements, img_w, img_h, bg_img, html_path, title)
-```
-
-Fungsi ini menghasilkan HTML final yang terdiri dari:
-
-- canvas slide,
-- background image,
-- elemen cover untuk menutup teks asli,
-- elemen teks hasil OCR,
-- CSS styling,
-- toolbar editor,
-- JavaScript untuk interaksi editing.
-
-Setiap teks dibuat sebagai elemen:
-
-```html
-<div class="text-el" contenteditable="true">
-  Contoh Teks
-</div>
-```
-
-Karena menggunakan `contenteditable`, teks dapat diedit langsung melalui browser.
+### 1. Konfigurasi Project
+
+File `config.py` memuat variabel environment dan konfigurasi utama:
+
+- API key Google Gemini.
+- API key Groq.
+- path ChromaDB.
+- path upload.
+- nama collection.
+- ukuran chunk.
+- overlap antar chunk.
+
+Konfigurasi ini kemudian digunakan oleh modul `ingest.py`, `parser.py`, dan `query.py`.
 
 ---
 
-## Fitur Editor HTML
+### 2. Upload PDF
 
-Output HTML memiliki toolbar floating seperti editor sederhana. Toolbar akan muncul ketika pengguna mengklik teks.
+Endpoint `/ingest` menerima file PDF dari user. File divalidasi berdasarkan ekstensi `.pdf`. Jika file valid, file disimpan ke folder `uploads/`.
 
-Fitur toolbar:
+```python
+save_path = os.path.join(UPLOAD_PATH, file.filename)
+with open(save_path, "wb") as f:
+    shutil.copyfileobj(file.file, f)
+```
 
-- memilih font family,
-- memperbesar ukuran font,
-- memperkecil ukuran font,
-- bold,
-- italic,
-- underline,
-- strikethrough,
-- mengubah warna teks,
-- align left,
-- align center,
-- align right,
-- justify.
+Setelah tersimpan, file diproses oleh fungsi:
 
-Toolbar ini membantu pengguna memperbaiki hasil OCR secara manual tanpa perlu mengubah kode Python.
+```python
+process_pdf(save_path)
+```
+
+---
+
+### 3. Parsing PDF
+
+Parsing dilakukan oleh fungsi:
+
+```python
+parse_pdf(pdf_path)
+```
+
+Fungsi ini membuka PDF menggunakan PyMuPDF:
+
+```python
+doc = fitz.open(pdf_path)
+```
+
+Untuk setiap halaman, sistem mengambil:
+
+- nomor halaman,
+- teks halaman menggunakan `page.get_text("text")`,
+- deskripsi gambar dari halaman tersebut.
+
+Output `parse_pdf()` berbentuk list dictionary:
+
+```json
+[
+  {
+    "page": 1,
+    "text": "teks halaman",
+    "images_description": [
+      "deskripsi gambar halaman"
+    ]
+  }
+]
+```
+
+---
+
+### 4. Deskripsi Gambar dengan Groq Vision
+
+Jika halaman memiliki gambar yang ukurannya memenuhi batas minimum, gambar akan diekstrak lalu dikirim ke Groq Vision.
+
+Fungsi utama:
+
+```python
+describe_image_with_groq(image_bytes)
+```
+
+Model yang digunakan:
+
+```text
+llama-3.2-11b-vision-preview
+```
+
+Prompt vision meminta model untuk mendeskripsikan:
+
+- diagram alur,
+- chart atau grafik,
+- tabel,
+- gambar,
+- daftar item,
+- teks yang tampil pada visual.
+
+---
+
+### 5. Manual Page Description
+
+Beberapa halaman infografis kompleks diberi deskripsi manual melalui dictionary:
+
+```python
+MANUAL_PAGE_DESCRIPTIONS = {
+    8: "...",
+    9: "..."
+}
+```
+
+Halaman 8 berisi alur penanganan pengaduan nasabah.  
+Halaman 9 berisi daftar saluran pengaduan Bank Mandiri.
+
+Manual injection digunakan karena infografis yang kompleks sering kali sulit dideskripsikan secara lengkap oleh vision model secara otomatis.
+
+---
+
+### 6. Chunking Dokumen
+
+Setelah teks halaman dan deskripsi gambar digabungkan, teks dipotong menjadi chunk menggunakan:
+
+```python
+RecursiveCharacterTextSplitter
+```
+
+Konfigurasi chunking:
+
+```python
+chunk_size = 1000
+chunk_overlap = 200
+separators = ["\n\n", "\n", ". ", " "]
+```
+
+Tujuannya agar setiap chunk memiliki konteks yang cukup, tetapi tetap tidak terlalu panjang untuk proses retrieval dan LLM.
+
+---
+
+### 7. Embedding Chunk
+
+Setiap chunk diubah menjadi vector embedding menggunakan:
+
+```python
+models/gemini-embedding-001
+```
+
+Fungsi utama:
+
+```python
+embed_texts(texts)
+```
+
+Embedding dilakukan dalam batch berisi 10 chunk:
+
+```python
+for i in range(0, len(all_chunks), 10):
+    batch = all_chunks[i:i+10]
+    all_vectors.extend(embed_texts(batch))
+```
+
+Batching dilakukan agar proses embedding lebih stabil dan tidak terlalu berat dalam satu request.
+
+---
+
+### 8. Penyimpanan ke ChromaDB
+
+Setelah chunk dan embedding tersedia, data disimpan ke ChromaDB.
+
+```python
+collection.add(
+    documents=all_chunks,
+    embeddings=all_vectors,
+    metadatas=all_metadatas,
+    ids=all_ids
+)
+```
+
+Data yang disimpan:
+
+| Data | Isi |
+|---|---|
+| `documents` | Teks chunk |
+| `embeddings` | Vector embedding chunk |
+| `metadatas` | Metadata halaman dan sumber file |
+| `ids` | ID unik untuk setiap chunk |
+
+Metadata yang disimpan:
+
+```json
+{
+  "page": 8,
+  "source": "./uploads/nama_file.pdf"
+}
+```
+
+Metadata ini digunakan untuk menampilkan halaman sumber ketika sistem menjawab pertanyaan.
+
+---
+
+### 9. Query dan Retrieval
+
+Ketika user mengirim pertanyaan ke endpoint `/query`, sistem membuat embedding pertanyaan menggunakan fungsi:
+
+```python
+embed_query(question)
+```
+
+Kemudian ChromaDB melakukan pencarian:
+
+```python
+collection.query(
+    query_embeddings=[query_vector],
+    n_results=top_k,
+    include=["documents", "metadatas", "distances"]
+)
+```
+
+Hasil retrieval berupa:
+
+- chunk dokumen relevan,
+- metadata halaman,
+- distance similarity.
+
+---
+
+### 10. Answer Generation
+
+Chunk yang ditemukan disusun menjadi context:
+
+```text
+[Halaman 8]
+isi chunk dari halaman 8
+
+---
+
+[Halaman 9]
+isi chunk dari halaman 9
+```
+
+Kemudian context dan pertanyaan dimasukkan ke prompt:
+
+```text
+Kamu adalah asisten yang menjawab pertanyaan berdasarkan dokumen Laporan Bank Mandiri 2025.
+Jawab HANYA berdasarkan context yang diberikan.
+Jika informasi tidak ada di context, katakan informasi tidak ditemukan dalam dokumen.
+Jawab dalam Bahasa Indonesia yang jelas dan terstruktur.
+```
+
+Pipeline jawaban menggunakan LangChain LCEL:
+
+```python
+chain = prompt_template | llm | StrOutputParser()
+```
 
 ---
 
 ## Penjelasan Modul Kode
 
-### 1. Konstanta Konfigurasi
+### `app/config.py`
 
-Mengatur parameter global pipeline, seperti confidence OCR, ukuran font, font family, dan filter logo.
-
-Contoh:
-
-```python
-MIN_CONF = 0.38
-OCR_UPSCALE = 2.0
-FONT_FAMILY = '"Poppins","Montserrat","Trebuchet MS","Arial",sans-serif'
-```
-
-### 2. Utilitas Umum
-
-Berisi fungsi bantu:
-
-| Fungsi | Keterangan |
-|---|---|
-| `safe_int()` | Membulatkan nilai menjadi integer |
-| `clamp()` | Membatasi nilai agar tetap dalam range |
-| `bgr_to_hex()` | Mengubah warna BGR menjadi HEX |
-| `hex_to_rgb()` | Mengubah warna HEX menjadi RGB |
-| `luminance_bgr()` | Menghitung luminance warna |
-| `NumpyEncoder` | Mengubah tipe NumPy agar dapat disimpan ke JSON |
-
-### 3. Koreksi dan Normalisasi Teks
-
-Berisi fungsi untuk membersihkan teks hasil OCR.
-
-| Fungsi | Keterangan |
-|---|---|
-| `norm_text()` | Normalisasi whitespace dan dash |
-| `fix_spacing()` | Memperbaiki spasi antar karakter |
-| `correct_text()` | Koreksi teks hasil OCR |
-| `text_quality_score()` | Menghitung kualitas teks |
-
-### 4. Preprocessing dan OCR
-
-Berisi fungsi untuk mempersiapkan gambar dan menjalankan OCR.
-
-| Fungsi | Keterangan |
-|---|---|
-| `preprocess_for_ocr()` | Melakukan upscale dan CLAHE |
-| `run_paddleocr()` | Menjalankan PaddleOCR |
-| `run_easyocr()` | Menjalankan EasyOCR |
-| `run_ocr()` | Memilih OCR engine dan fallback |
-
-### 5. Analisis Visual Elemen Teks
-
-Berisi fungsi untuk menganalisis area teks.
-
-| Fungsi | Keterangan |
-|---|---|
-| `expand_box()` | Memperluas bounding box |
-| `estimate_bg_color()` | Estimasi warna background |
-| `local_contrast()` | Menghitung kontras lokal |
-| `text_mask_from_crop()` | Membuat mask teks dari crop |
-
-### 6. Klasifikasi Elemen Teks
-
-Berisi fungsi untuk menentukan jenis teks.
-
-| Fungsi | Keterangan |
-|---|---|
-| `is_top_title_area()` | Mendeteksi judul bagian atas |
-| `is_hero_title()` | Mendeteksi judul besar di tengah |
-| `is_in_logo_region()` | Mendeteksi teks di area logo kanan atas |
-
-### 7. Estimasi Gaya
-
-Berisi fungsi untuk menentukan style visual teks.
-
-| Fungsi | Keterangan |
-|---|---|
-| `estimate_text_color()` | Estimasi warna teks |
-| `estimate_cover_color()` | Estimasi warna background cover |
-| `estimate_font_size()` | Estimasi ukuran font |
-| `estimate_weight()` | Estimasi ketebalan font |
-| `estimate_align()` | Estimasi alignment teks |
-| `enrich_style()` | Menambahkan semua style ke elemen teks |
-
-### 8. Filter, Deduplication, dan Merge
-
-Berisi fungsi untuk membersihkan dan menggabungkan hasil OCR.
-
-| Fungsi | Keterangan |
-|---|---|
-| `filter_noise()` | Menghapus elemen noise |
-| `iou()` | Menghitung Intersection over Union |
-| `vertical_overlap_ratio()` | Menghitung overlap vertikal |
-| `deduplicate()` | Menghapus elemen duplikat |
-| `merge_same_line()` | Menggabungkan teks satu baris |
-
-### 9. Background Processing
-
-Berisi fungsi untuk membuat mask dan menghapus teks asli jika mode inpaint digunakan.
-
-| Fungsi | Keterangan |
-|---|---|
-| `build_mask()` | Membuat mask teks |
-| `inpaint_background()` | Menghapus teks menggunakan OpenCV inpainting |
-
-### 10. HTML Generator
-
-Berisi fungsi untuk menghasilkan file HTML final.
-
-| Fungsi | Keterangan |
-|---|---|
-| `rel_path()` | Membuat relative path untuk background |
-| `generate_html()` | Membuat HTML interaktif |
-
-### 11. Debug dan Output
-
-Berisi fungsi untuk menyimpan gambar debug.
-
-| Fungsi | Keterangan |
-|---|---|
-| `save_debug()` | Menyimpan gambar dengan bounding box teks |
-
-### 12. Pipeline Utama
+Modul ini berisi konfigurasi global project.
 
 Fungsi utama:
 
-```python
-process_image(path, out_dir, engine, debug, cover_mode)
-```
+- membaca `.env`,
+- mengambil API key,
+- menentukan path vectorstore,
+- menentukan path upload,
+- menentukan nama collection,
+- menentukan chunk size dan overlap.
 
-Urutan proses:
-
-1. Membaca gambar.
-2. Membuat folder temporary `_tmp`.
-3. Menjalankan OCR.
-4. Memfilter noise.
-5. Menggabungkan teks pada baris yang sama.
-6. Menambahkan informasi style.
-7. Membuat background.
-8. Membuat HTML.
-9. Membuat JSON metadata.
-10. Menyimpan debug output jika mode debug aktif.
-11. Mengembalikan path hasil output.
-
-### 13. Entry Point
-
-Fungsi utama program:
+Variabel penting:
 
 ```python
-main()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+VECTORSTORE_PATH = "./vectorstore"
+UPLOAD_PATH = "./uploads"
+COLLECTION_NAME = "mandiri_2025"
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
 ```
 
-Bagian ini mengatur:
+---
 
-- argument CLI,
-- input path,
-- output path,
-- pemilihan OCR engine,
-- mode debug,
-- mode cover,
-- dan pemrosesan semua gambar.
+### `app/main.py`
+
+Modul ini merupakan entry point API menggunakan FastAPI.
+
+Isi utama:
+
+- membuat instance FastAPI,
+- mendefinisikan model request dan response,
+- membuat endpoint `/`,
+- membuat endpoint `/ingest`,
+- membuat endpoint `/query`.
+
+Endpoint:
+
+| Endpoint | Method | Fungsi |
+|---|---|---|
+| `/` | GET | Mengecek status API |
+| `/ingest` | POST | Upload dan proses PDF |
+| `/query` | POST | Mengirim pertanyaan dan mendapatkan jawaban |
+
+---
+
+### `app/parser.py`
+
+Modul ini bertugas membaca isi PDF.
+
+Fungsi utama:
+
+| Fungsi | Keterangan |
+|---|---|
+| `describe_image_with_groq()` | Mengirim gambar ke Groq Vision dan menerima deskripsi |
+| `_describe_page_images()` | Mengekstrak dan mendeskripsikan gambar dari halaman PDF |
+| `parse_pdf()` | Mengambil teks dan deskripsi gambar dari seluruh halaman PDF |
+
+Konstanta penting:
+
+| Konstanta | Fungsi |
+|---|---|
+| `MIN_IMAGE_SIZE` | Mengabaikan gambar kecil agar logo/icon tidak ikut diproses |
+| `VISION_PROMPT` | Instruksi untuk Groq Vision |
+| `MANUAL_PAGE_DESCRIPTIONS` | Deskripsi manual untuk halaman infografis kompleks |
+
+---
+
+### `app/ingest.py`
+
+Modul ini bertugas membuat knowledge base dari PDF.
+
+Fungsi utama:
+
+| Fungsi | Keterangan |
+|---|---|
+| `embed_texts()` | Membuat embedding untuk beberapa teks |
+| `process_pdf()` | Parsing PDF, chunking, embedding, dan simpan ke ChromaDB |
+
+Tahapan `process_pdf()`:
+
+1. Parsing PDF.
+2. Menggabungkan teks halaman dengan deskripsi gambar.
+3. Memecah teks menjadi chunk.
+4. Membuat embedding semua chunk.
+5. Menyimpan chunk ke ChromaDB.
+6. Mengembalikan jumlah halaman dan chunk.
+
+---
+
+### `app/query.py`
+
+Modul ini bertugas menjawab pertanyaan pengguna.
+
+Fungsi utama:
+
+| Fungsi | Keterangan |
+|---|---|
+| `embed_query()` | Membuat embedding dari pertanyaan |
+| `answer_question()` | Retrieval chunk relevan dan menghasilkan jawaban |
+
+Komponen utama:
+
+```python
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0.2,
+    max_tokens=1024
+)
+```
+
+Prompt dirancang agar model hanya menjawab berdasarkan context yang diberikan. Jika jawaban tidak tersedia pada context, model diarahkan untuk mengatakan bahwa informasi tidak ditemukan dalam dokumen.
 
 ---
 
 ## Keputusan Desain
 
-### 1. OCR Engine dengan Fallback
+### 1. Custom Parser dengan PyMuPDF
 
-PaddleOCR digunakan sebagai engine utama karena memiliki kemampuan deteksi teks dan bounding box yang baik. Namun, jika PaddleOCR gagal, sistem otomatis menggunakan EasyOCR. Pendekatan ini membuat pipeline lebih fleksibel dan tidak langsung berhenti ketika salah satu OCR engine bermasalah.
+Parser dibuat menggunakan PyMuPDF karena project perlu mengekstrak bukan hanya teks, tetapi juga gambar dari PDF. PyMuPDF memungkinkan sistem mengambil teks halaman dan mengekstrak gambar dalam bentuk bytes untuk dikirim ke vision model.
 
-### 2. Preprocessing dengan CLAHE
+---
 
-CLAHE digunakan untuk meningkatkan kontras gambar sebelum OCR. Teknik ini diterapkan pada channel brightness dari ruang warna HSV. Tujuannya adalah membuat teks lebih jelas dan lebih mudah dibaca oleh OCR.
+### 2. Groq Vision untuk Konten Visual
 
-### 3. CSS Cover sebagai Mode Default
+Dokumen PDF tidak selalu berisi teks biasa. Beberapa informasi penting dapat berada dalam chart, tabel gambar, atau infografis. Karena itu, gambar yang ditemukan di halaman PDF dikirim ke Groq Vision agar dapat diubah menjadi deskripsi teks.
 
-Mode `css` dipilih sebagai default karena lebih aman dalam mempertahankan tampilan gambar asli. Pada mode ini, gambar asli tetap digunakan sebagai background, sementara area teks asli ditutup dengan elemen cover yang warnanya diestimasi dari background sekitar teks.
+---
 
-Mode ini lebih ringan dan lebih mudah dikoreksi manual dibandingkan inpainting.
+### 3. Manual Injection untuk Halaman 8 dan 9
 
-### 4. Inpainting sebagai Mode Alternatif
+Halaman 8 dan 9 diberi deskripsi manual karena berisi infografis yang kompleks. Untuk kasus seperti flowchart, ikon, dan daftar visual, manual injection memastikan informasi penting tetap masuk ke knowledge base secara akurat.
 
-Mode `inpaint` disediakan untuk menghapus teks asli dari gambar. Mode ini cocok jika pengguna ingin background yang lebih bersih. Namun, hasil inpainting dapat kurang stabil pada background kompleks, sehingga mode ini tidak dijadikan default.
+---
 
-### 5. Estimasi Font Berdasarkan Bounding Box
+### 4. Gemini Embedding untuk Semantic Search
 
-OCR tidak memberikan informasi font asli. Oleh karena itu, ukuran font diperkirakan dari tinggi dan lebar bounding box. Untuk judul besar, perhitungan dibuat lebih agresif agar hasil HTML mendekati ukuran judul pada gambar asli.
+Gemini `gemini-embedding-001` digunakan untuk membuat representasi vector dari chunk dan pertanyaan. Embedding ini memungkinkan sistem mencari chunk berdasarkan makna, bukan hanya kemiripan kata secara literal.
 
-### 6. Deteksi Judul Berdasarkan Posisi dan Ukuran
+---
 
-Pipeline membedakan teks biasa, top title, dan hero title berdasarkan posisi dan ukuran bounding box. Hal ini penting karena judul biasanya perlu font lebih besar dan lebih tebal daripada teks biasa.
+### 5. ChromaDB sebagai Vector Store Lokal
 
-### 7. Heavy Keywords untuk Font Tebal
+ChromaDB digunakan karena mudah dijalankan secara lokal dan mendukung penyimpanan persistent. Data vector tetap tersimpan di folder `vectorstore/`, sehingga tidak perlu membuat ulang knowledge base setiap kali server dijalankan ulang.
 
-Daftar `heavy_keywords` digunakan untuk mengenali teks tertentu yang dianggap penting, seperti `talent development`, `cyber security`, `cloud computing`, `research center`, `human resource`, dan `services`.
+---
 
-Jika teks mengandung keyword tersebut, font weight dibuat menjadi `700`, sehingga tampil lebih tebal pada output HTML.
+### 6. LangChain LCEL untuk Answer Generation
 
-### 8. Estimasi Warna Teks Menggunakan K-Means
+LangChain LCEL digunakan untuk menyusun pipeline jawaban secara ringkas dan modular:
 
-Warna teks diperkirakan dengan K-Means clustering. Area crop teks biasanya terdiri dari warna background dan warna foreground. Dengan `k=2`, program mencoba memisahkan dua warna dominan tersebut dan memilih cluster yang lebih kecil sebagai warna teks.
+```python
+chain = prompt_template | llm | StrOutputParser()
+```
 
-### 9. Output HTML Dibuat Editable
+Dengan struktur ini, prompt, model, atau parser output dapat diganti tanpa mengubah keseluruhan alur.
 
-HTML menggunakan `contenteditable="true"` agar pengguna dapat mengoreksi hasil secara manual. Ini penting karena OCR dan estimasi style tidak selalu sempurna, terutama pada gambar dengan layout kompleks.
+---
 
-### 10. JSON Metadata sebagai Data Layout
+### 7. Chunk Size 1000 dan Overlap 200
 
-JSON metadata dibuat agar hasil ekstraksi tidak hanya tersedia dalam bentuk visual HTML, tetapi juga dalam bentuk data terstruktur. Data ini dapat digunakan untuk debugging, evaluasi, atau pengembangan fitur lanjutan.
+Chunk size 1000 dipilih agar setiap chunk memiliki konteks yang cukup. Overlap 200 digunakan agar informasi yang berada di batas antar chunk tidak terpotong sepenuhnya.
+
+---
+
+### 8. Metadata Halaman Sumber
+
+Setiap chunk disimpan dengan metadata halaman. Metadata ini penting agar jawaban tidak hanya berisi teks, tetapi juga dapat menunjukkan halaman sumber yang digunakan.
 
 ---
 
 ## Catatan Pengembangan
 
-Beberapa pengembangan yang masih dapat dilakukan:
+Beberapa pengembangan yang dapat dilakukan:
 
-1. Meningkatkan akurasi deteksi font family.
-2. Menambahkan deteksi ukuran font yang lebih presisi.
-3. Menambahkan drag-and-drop untuk memindahkan teks di HTML.
-4. Menambahkan resize handle untuk mengubah bounding box secara manual.
-5. Menambahkan fitur save hasil edit HTML ke JSON.
-6. Menambahkan export ke PowerPoint.
-7. Menambahkan export ke PDF.
-8. Menambahkan deteksi paragraf multi-line yang lebih akurat.
-9. Menambahkan mode khusus untuk background kompleks.
-10. Menambahkan integrasi vision-language model untuk estimasi style.
-11. Menambahkan GUI agar pengguna tidak perlu menjalankan CLI.
-12. Menghapus folder `_tmp` otomatis setelah proses selesai jika tidak diperlukan.
+1. Menambahkan pengecekan otomatis jika API key belum tersedia.
+2. Membuat folder `uploads/` otomatis jika belum ada.
+3. Menambahkan endpoint untuk menghapus collection ChromaDB.
+4. Menambahkan endpoint untuk melihat daftar dokumen yang sudah diingest.
+5. Menambahkan reranking agar retrieval lebih akurat.
+6. Menambahkan validasi ukuran file PDF.
+7. Menambahkan dukungan multi-dokumen dengan metadata nama dokumen.
+8. Menambahkan streaming response untuk jawaban panjang.
+9. Menambahkan UI sederhana untuk upload PDF dan bertanya.
+10. Menambahkan evaluasi retrieval seperti precision@k atau recall@k.
 
 ---
 
 ## Contoh Workflow
 
-### 1. Masukkan gambar ke folder input
-
-```text
-input/
-└── ekosistem.jpg
-```
-
-### 2. Jalankan pipeline
+### 1. Jalankan server
 
 ```bash
-python pipeline.py --engine paddle --debug --cover-mode css
+uvicorn app.main:app --reload --port 8000
 ```
 
-### 3. Buka hasil HTML
+### 2. Buka Swagger UI
 
 ```text
-output/ekosistem_css_cover.html
+http://127.0.0.1:8000/docs
 ```
 
-### 4. Edit teks langsung di browser jika diperlukan
+### 3. Upload PDF melalui endpoint `/ingest`
 
-Klik teks pada HTML, lalu gunakan toolbar untuk mengubah font, ukuran, warna, alignment, atau format teks.
+Upload dokumen PDF Bank Mandiri 2025.
 
-### 5. Cek metadata hasil ekstraksi
+### 4. Tunggu proses ingestion selesai
 
-```text
-output/ekosistem_data.json
+Contoh response:
+
+```json
+{
+  "status": "success",
+  "total_pages": 9,
+  "total_chunks": 41
+}
 ```
 
-### 6. Cek ringkasan hasil seluruh proses
+### 5. Kirim pertanyaan melalui endpoint `/query`
 
-```text
-output/results.json
+Contoh request:
+
+```json
+{
+  "question": "Apa saja saluran pengaduan yang tersedia?",
+  "top_k": 5
+}
+```
+
+### 6. Terima jawaban
+
+Contoh response:
+
+```json
+{
+  "question": "Apa saja saluran pengaduan yang tersedia?",
+  "answer": "Saluran pengaduan yang tersedia meliputi Mandiri Call 14000, akun X mandiricare dan @bankmandiri, WhatsApp MITA, website Bank Mandiri, Facebook, kantor cabang, email, Instagram, dan surat resmi.",
+  "source_pages": [9],
+  "chunks_used": 5
+}
 ```
 
 ---
 
 ## Kesimpulan
 
-Project ini merupakan pipeline OCR dan layout reconstruction yang tidak hanya membaca teks dari gambar, tetapi juga mencoba membangun ulang tampilan visualnya dalam bentuk HTML. Dengan kombinasi OCR, preprocessing gambar, filter noise, style estimation, CSS cover, inpainting, dan editor HTML sederhana, sistem ini dapat digunakan sebagai dasar untuk eksperimen ekstraksi teks berbasis layout dan rekonstruksi dokumen visual.
+Project **Multimodal RAG — Bank Mandiri 2025** merupakan sistem tanya-jawab berbasis dokumen PDF yang menggabungkan parsing teks, pemahaman gambar, semantic search, vector database, dan LLM. Dengan pipeline ingestion dan query yang terpisah, sistem ini dapat memproses dokumen PDF multimodal dan memberikan jawaban dalam Bahasa Indonesia berdasarkan context dokumen yang paling relevan.
