@@ -1,6 +1,6 @@
-# Multimodal RAG — Bank Mandiri 2025
+# Layout Aware Text Extraction
 
-> Pipeline Retrieval Augmented Generation end-to-end yang mampu memproses dokumen PDF multimodal (teks, tabel, gambar, infografis) dan menjawab pertanyaan berbasis dokumen melalui REST API.
+Pipeline OCR end-to-end yang mampu membaca **posisi, ukuran font, warna, dan alignment** teks dari gambar secara otomatis, lalu merender ulang hasilnya sebagai **file HTML interaktif** yang tampilannya menyerupai gambar asli — lengkap dengan toolbar edit layaknya aplikasi pengolah kata.
 
 ---
 
@@ -9,28 +9,36 @@
 - [Gambaran Umum](#gambaran-umum)
 - [Arsitektur](#arsitektur)
 - [Tech Stack](#tech-stack)
-- [Struktur Project](#struktur-project)
+- [Struktur Proyek](#struktur-proyek)
 - [Prasyarat](#prasyarat)
 - [Instalasi](#instalasi)
 - [Konfigurasi](#konfigurasi)
 - [Menjalankan Aplikasi](#menjalankan-aplikasi)
-- [Referensi API](#referensi-api)
-- [Hasil Evaluasi](#hasil-evaluasi)
+- [Argumen CLI](#argumen-cli)
+- [Struktur Output](#struktur-output)
+- [Format Data JSON](#format-data-json)
+- [Toolbar HTML Interaktif](#toolbar-html-interaktif)
 - [Keputusan Desain](#keputusan-desain)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Gambaran Umum
 
-Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri 2025 yang mengandung teks, tabel, dan gambar/infografis. Pengguna dapat mengajukan pertanyaan dalam Bahasa Indonesia, dan sistem akan memberikan jawaban akurat beserta referensi halaman sumber.
+Alat ini membangun representasi teks yang kaya secara visual dari sebuah gambar (flyer, slide, poster, brosur). Setiap teks yang ditemukan diekstrak bersama informasi posisi, ukuran, warna, dan gaya tipografinya, kemudian dirender ulang sebagai overlay di atas gambar background pada sebuah halaman HTML.
 
-**Kemampuan utama:**
-- Ekstraksi teks dan tabel dari PDF secara struktural
-- Interpretasi gambar, chart, dan infografis menggunakan Vision Language Model
-- Knowledge injection manual untuk konten visual yang kompleks
-- Semantic search berbasis vector similarity
-- Answer synthesis menggunakan LLM dengan LangChain orchestration
-- Metadata halaman sumber di setiap response untuk keperluan debugging
+Kemampuan utama:
+
+- Ekstraksi teks dari gambar menggunakan dua engine OCR (PaddleOCR & EasyOCR)
+- Pra-pemrosesan gambar otomatis: upscale resolusi + CLAHE contrast enhancement
+- Koreksi teks OCR otomatis: normalisasi spasi, perbaikan karakter salah, penggantian frasa
+- Klasifikasi elemen: membedakan *hero title*, *top title area*, dan teks isi
+- Estimasi gaya visual per elemen: font size, font weight, warna teks, warna background, alignment
+- Filter noise cerdas: mengabaikan logo, elemen kontras rendah, dan karakter sampah
+- Dua mode cover teks: CSS backdrop blur atau OpenCV inpainting TELEA
+- Output HTML interaktif: teks dapat diedit langsung di browser
+- Output JSON terstruktur: data elemen siap pakai untuk keperluan downstream
+- Mode debug: bounding box dan binary mask tersimpan sebagai gambar terpisah
 
 ---
 
@@ -40,49 +48,39 @@ Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri
 ┌─────────────────────────────────────────────────────────────────┐
 │                     INGESTION PIPELINE                          │
 │                                                                 │
-│  Upload PDF                                                     │
+│  Gambar Input (.jpg / .png / .bmp / .webp)                      │
 │      │                                                          │
 │      ▼                                                          │
-│  parser.py ──── PyMuPDF ──────► Teks per halaman                |
-│      │                                                          │
-│      ├──── Groq Vision ────────► Deskripsi gambar/chart         |
-│      │     (llama-3.2-11b)                                      │
-│      │                                                          │
-│      └──── Manual Injection ───► Deskripsi infografis kompleks  |
-│                                  (hal. 8 & 9)                   │
+│  preprocess_for_ocr()                                           │
+│      ├── Upscale ×2 (jika lebar < 1600px, INTER_CUBIC)          │
+│      └── CLAHE contrast enhancement (channel V, HSV)           │
 │      │                                                          │
 │      ▼                                                          │
-│  ingest.py ─── LangChain ──────► RecursiveCharacterTextSplitter |
-│                TextSplitter      chunk_size=1000, overlap=200   │
+│  run_ocr()                                                      │
+│      ├── PaddleOCR (default) ──► DB detection + angle cls      │
+│      └── EasyOCR (fallback)  ──► multi-lang [en, id]           │
 │      │                                                          │
 │      ▼                                                          │
-│  Gemini Embedding ─────────────► Vector                         |
-│  (gemini-embedding-001)                                         │
+│  filter_noise() ──────────────► Hapus logo, noise, low contrast │
 │      │                                                          │
 │      ▼                                                          │
-│  ChromaDB ─────────────────────► Persistent vector store        |
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                      QUERY PIPELINE                             │
-│                                                                 │
-│  Pertanyaan Pengguna                                            │
+│  merge_same_line() ───────────► Gabungkan kata dalam satu baris │
+│      │                          + deduplicate via IoU           │
 │      │                                                          │
 │      ▼                                                          │
-│  Gemini Embedding ─────────────► Query vector                   |
+│  enrich_style() ──────────────► Font size, weight, warna,      │
+│      ├── K-means (k=2)          alignment per elemen            │
+│      ├── Border median                                          │
+│      └── Dimensi bounding box                                   │
+│      │                                                          │
+│      ├──(css mode)────────────► Gambar asli sebagai background  │
+│      └──(inpaint mode)────────► Background di-inpaint TELEA     │
 │      │                                                          │
 │      ▼                                                          │
-│  ChromaDB ─────────────────────► Top-K chunk paling relevan     |
-│  Similarity Search               + metadata (halaman sumber)    |
+│  generate_html() ─────────────► HTML interaktif + toolbar edit  │
 │      │                                                          │
 │      ▼                                                          │
-│  LangChain LCEL Chain                                           │
-│      PromptTemplate                                             │
-│      │ ChatGroq (llama-3.3-70b)                                 |
-│      │ StrOutputParser                                          │
-│      │                                                          │
-│      ▼                                                          │
-│  Response: jawaban + halaman sumber + jumlah chunk              |
+│  Output: *_css_cover.html + *_background.png + *_data.json      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,271 +90,285 @@ Sistem ini membangun sebuah knowledge base dari dokumen PDF Laporan Bank Mandiri
 
 | Komponen | Teknologi | Keterangan |
 |---|---|---|
-| API Framework | FastAPI | REST API dengan Swagger UI otomatis |
-| Orchestration | LangChain (LCEL) | PromptTemplate, ChatGroq, StrOutputParser |
-| PDF Parser | PyMuPDF (fitz) | Ekstraksi teks dan gambar dari PDF |
-| Vision Model | Groq — Llama 3.2 11B Vision | Mendeskripsikan gambar/chart dari PDF |
-| Embedding | Google Gemini — gemini-embedding-001 | Semantic embedding Bahasa Indonesia |
-| Vector Database | ChromaDB | Penyimpanan vector lokal yang persisten |
-| LLM | Groq — Llama 3.3 70B Versatile | Pembuatan jawaban |
-| Bahasa Pemrograman | Python 3.12 | | Bahasa utama untuk pengembangan sistem |
+| Bahasa | Python 3.9+ | Single-file, tanpa dependensi internal |
+| Computer Vision | OpenCV (cv2) | Pra-pemrosesan, masking, inpainting TELEA |
+| Numerik | NumPy | Operasi piksel, K-means, median |
+| OCR (default) | PaddleOCR | DB detection, angle classification, akurasi tinggi |
+| OCR (fallback) | EasyOCR | Mendukung Bahasa Indonesia + Inggris |
+| Output Frontend | HTML + CSS + Vanilla JS | Toolbar edit floating, contenteditable |
+| Serialisasi | JSON (NumpyEncoder) | Tipe data NumPy otomatis dikonversi |
 
 ---
 
-## Struktur Project
+## Struktur Proyek
 
 ```
-rag-mandiri/
-├── app/
-│   ├── main.py         # FastAPI — definisi endpoint & penanganan request
-│   ├── parser.py       # Parsing PDF — ekstraksi teks, deskripsi gambar, manual injection
-│   ├── ingest.py       # Pipeline ingestion — chunking, embedding, penyimpanan ChromaDB
-│   ├── query.py        # Pipeline query — retrieval, LangChain chain, pembuatan jawaban
-│   └── config.py       # Konfigurasi terpusat & environment variables
-│
-├── vectorstore/        # Penyimpanan ChromaDB (dibuat otomatis saat pertama ingest)
-├── uploads/            # File PDF yang diupload (dibuat otomatis)
-├── .env                # API key (tidak di-commit ke version control)
-├── .env.example        # Template environment variables
-├── .gitignore          # Daftar file/folder yang diabaikan Git
-└── requirements.txt    # Daftar dependency Python project
+layout-aware-extraction/
+├── layout_aware_extraction.py   ← Script utama (single-file, semua logika di sini)
+├── input/                       ← Letakkan gambar input di sini (buat manual)
+├── output/                      ← Hasil output (dibuat otomatis saat dijalankan)
+│   ├── nama_file_css_cover.html
+│   ├── nama_file_background.png
+│   ├── nama_file_data.json
+│   ├── nama_file_debug.png      ← hanya dengan flag --debug
+│   ├── nama_file_mask.png       ← hanya dengan flag --debug
+│   ├── _tmp/
+│   │   └── nama_file_ocr_input.png
+│   └── results.json
+└── README.md
 ```
+
+Seluruh logika berada dalam satu file Python. Tidak ada modul tambahan atau konfigurasi eksternal yang diperlukan.
 
 ---
 
 ## Prasyarat
 
-- Python 3.10 atau lebih baru
-- Google Gemini API key — [ai.google.dev](https://ai.google.dev)
-- Groq API key — [console.groq.com](https://console.groq.com)
+- Python 3.9 atau lebih baru
+- OpenCV dan NumPy
+- Minimal satu OCR engine: PaddleOCR (direkomendasikan) atau EasyOCR
 
 ---
 
 ## Instalasi
 
 **1. Clone repository**
+
 ```bash
-git clone https://github.com/Ahjaris/Multimodal-RAG-Mandiri.git
-cd Multimodal-RAG-Mandiri
+git clone https://github.com/username/layout-aware-extraction.git
+cd layout-aware-extraction
 ```
 
 **2. Buat dan aktifkan virtual environment**
+
 ```bash
-python -m venv nama_venv
+python -m venv venv
 
 # Windows
-nama_venv\Scripts\activate
+venv\Scripts\activate
 
-# Mac/Linux
-source nama_venv/bin/activate
+# Mac / Linux
+source venv/bin/activate
 ```
 
-**3. Install semua dependensi**
+**3. Install dependensi dasar**
+
 ```bash
-pip install -r requirements.txt
+pip install opencv-python numpy
 ```
+
+**4. Install OCR engine**
+
+PaddleOCR (CPU, direkomendasikan):
+```bash
+pip install paddlepaddle paddleocr
+```
+
+EasyOCR:
+```bash
+pip install easyocr
+```
+
+> Untuk GPU, ganti `paddlepaddle` dengan `paddlepaddle-gpu` dan sesuaikan versi CUDA.
 
 ---
 
 ## Konfigurasi
 
-Buat file `.env` di root folder berdasarkan `.env.example`:
+Tidak diperlukan file konfigurasi eksternal. Semua parameter diatur sebagai konstanta di bagian atas `layout_aware_extraction.py`:
 
-```env
-GOOGLE_API_KEY=isi_google_gemini_api_key_kamu
-GROQ_API_KEY=isi_groq_api_key_kamu
-```
-
-Parameter lain dapat dikonfigurasi di `app/config.py`:
-
-```python
-VECTORSTORE_PATH = "./vectorstore"   # lokasi penyimpanan ChromaDB
-UPLOAD_PATH = "./uploads"            # lokasi file yang diupload
-COLLECTION_NAME = "mandiri_2025"     # nama collection ChromaDB
-CHUNK_SIZE = 1000                    # ukuran chunk dalam karakter
-CHUNK_OVERLAP = 200                  # overlap antar chunk
-```
+| Konstanta | Default | Keterangan |
+|---|---|---|
+| `MIN_CONF` | `0.38` | Batas minimum confidence OCR |
+| `UPSCALE_IF_WIDTH_BELOW` | `1600` | Gambar dengan lebar di bawah nilai ini di-upscale sebelum OCR |
+| `OCR_UPSCALE` | `2.0` | Faktor pengali resolusi saat upscale |
+| `MIN_FONT_SIZE` | `10` | Ukuran font minimum output (px) |
+| `MAX_FONT_SIZE` | `90` | Ukuran font maksimum untuk teks biasa (px) |
+| `MIN_LOCAL_CONTRAST` | `18.0` | Batas kontras minimum; elemen di bawah nilai ini + confidence rendah dibuang |
+| `LINE_HEIGHT` | `1.12` | Nilai line-height CSS pada HTML output |
+| `IGNORE_TOP_RIGHT_LOGO` | `True` | Abaikan teks di area logo pojok kanan atas |
+| `LOGO_X_START_RATIO` | `0.78` | Titik awal horizontal area logo (rasio terhadap lebar gambar) |
+| `LOGO_Y_END_RATIO` | `0.18` | Titik akhir vertikal area logo (rasio terhadap tinggi gambar) |
+| `FONT_FAMILY` | Poppins, Montserrat, ... | Stack font CSS untuk HTML output |
 
 ---
 
 ## Menjalankan Aplikasi
 
-**Jalankan server:**
+Letakkan gambar di folder `./input`, lalu jalankan:
+
 ```bash
-uvicorn app.main:app --reload --port 8000
+python layout_aware_extraction.py
 ```
 
-**Buka Swagger UI untuk mencoba endpoint:**
-```
-http://127.0.0.1:8000/docs
+Buka file `./output/nama_file_css_cover.html` di browser untuk melihat hasilnya.
+
+---
+
+## Argumen CLI
+
+| Argumen | Default | Keterangan |
+|---|---|---|
+| `--input` | `./input` | Path ke file gambar tunggal atau folder berisi gambar |
+| `--output` | `./output` | Folder tujuan hasil output |
+| `--engine` | `paddle` | Engine OCR: `paddle` atau `easyocr` |
+| `--cover-mode` | `css` | Mode cover teks: `css` (backdrop blur) atau `inpaint` (OpenCV TELEA) |
+| `--debug` | *(tidak aktif)* | Simpan gambar debug (bounding box) dan binary mask |
+| `--clean-output` | *(tidak aktif)* | Hapus seluruh isi folder output sebelum dijalankan |
+
+**Contoh penggunaan:**
+
+```bash
+# Proses satu file
+python layout_aware_extraction.py --input ./poster.png
+
+# Proses folder dengan EasyOCR
+python layout_aware_extraction.py --input ./input --engine easyocr
+
+# Mode inpaint + debug + output bersih
+python layout_aware_extraction.py --cover-mode inpaint --debug --clean-output
+
+# Kombinasi lengkap
+python layout_aware_extraction.py \
+  --input ./input \
+  --output ./output \
+  --engine paddle \
+  --cover-mode inpaint \
+  --debug \
+  --clean-output
 ```
 
 ---
 
-## Referensi API
+## Struktur Output
 
-### `GET /`
-Endpoint pengecekan status server.
+Untuk setiap gambar input bernama `nama_file.jpg`, dihasilkan:
 
-**Response:**
+```
+output/
+├── nama_file_css_cover.html    ← File utama: tampilan HTML interaktif yang dapat diedit
+├── nama_file_background.png    ← Gambar background (asli atau ter-inpaint)
+├── nama_file_data.json         ← Data elemen teks terstruktur
+├── nama_file_debug.png         ← (--debug) Bounding box merah tiap elemen
+├── nama_file_mask.png          ← (--debug) Binary mask area teks
+├── _tmp/
+│   └── nama_file_ocr_input.png ← Gambar setelah pra-pemrosesan (input ke OCR)
+└── results.json                ← Ringkasan path semua output sesi ini
+```
+
+---
+
+## Format Data JSON
+
+Setiap elemen dalam array `elements` pada file `*_data.json`:
+
 ```json
 {
-  "status": "ok",
-  "message": "RAG API aktif"
+  "text":        "Talent Development",
+  "x":           142,
+  "y":           380,
+  "w":           310,
+  "h":           38,
+  "confidence":  0.961,
+  "contrast":    47.5,
+  "font_size":   39,
+  "line_height": 1.12,
+  "font_weight": "700",
+  "color":       "#ffffff",
+  "cover_color": "#1a3a5c",
+  "align":       "center",
+  "bg_lum":      28.4
 }
 ```
-
----
-
-### `POST /ingest`
-Upload dan proses file PDF menjadi knowledge base.
-
-**Request:** `multipart/form-data`
 
 | Field | Tipe | Keterangan |
 |---|---|---|
-| file | File | File PDF yang akan diproses |
-
-**Response:**
-```json
-{
-  "status": "success",
-  "total_pages": 9,
-  "total_chunks": 41
-}
-```
-
-**Error:**
-- `400` — File bukan format PDF
-
-**Proses yang terjadi:**
-1. PDF disimpan ke folder `uploads/`
-2. Teks diekstrak per halaman menggunakan PyMuPDF
-3. Gambar/chart dideskripsikan menggunakan Groq Vision
-4. Deskripsi manual diinjeksi untuk halaman dengan infografis kompleks
-5. Teks dipotong menjadi chunk menggunakan `RecursiveCharacterTextSplitter` (1000 karakter, overlap 200)
-6. Setiap chunk di-embed menggunakan Gemini `gemini-embedding-001`
-7. Vector beserta metadata disimpan ke ChromaDB
+| `text` | string | Teks hasil OCR setelah koreksi |
+| `x`, `y` | int | Koordinat pojok kiri atas bounding box (piksel) |
+| `w`, `h` | int | Lebar dan tinggi bounding box (piksel) |
+| `confidence` | float | Skor kepercayaan OCR (0.0 – 1.0) |
+| `contrast` | float | Kontras lokal area teks (persentil 95 − 5 grayscale) |
+| `font_size` | int | Estimasi ukuran font (px) |
+| `line_height` | float | Nilai line-height CSS |
+| `font_weight` | string | `"500"`, `"600"`, atau `"700"` |
+| `color` | string | Warna teks dalam format hex |
+| `cover_color` | string | Warna background cover dalam format hex |
+| `align` | string | `"left"` atau `"center"` |
+| `bg_lum` | float | Luminansi rata-rata background (0 – 255) |
 
 ---
 
-### `POST /query`
-Ajukan pertanyaan berdasarkan dokumen yang sudah diingesti.
+## Toolbar HTML Interaktif
 
-**Request body:**
-```json
-{
-  "question": "Apa saja peran Unit Pelindungan Nasabah?",
-  "top_k": 5
-}
-```
+File HTML output dilengkapi toolbar edit **floating popup** yang muncul otomatis saat mengklik elemen teks.
 
-| Field | Tipe | Default | Keterangan |
-|---|---|---|---|
-| question | string | wajib diisi | Pertanyaan dalam Bahasa Indonesia |
-| top_k | integer | 5 | Jumlah chunk yang diambil saat retrieval |
-
-**Response:**
-```json
-{
-  "question": "Apa saja peran Unit Pelindungan Nasabah?",
-  "answer": "Unit Pelindungan Nasabah memiliki beberapa peran...",
-  "source_pages": [7, 8],
-  "chunks_used": 5
-}
-```
-
-| Field | Keterangan |
+| Fitur | Keterangan |
 |---|---|
-| answer | Jawaban dalam Bahasa Indonesia berdasarkan dokumen |
-| source_pages | Nomor halaman tempat jawaban ditemukan |
-| chunks_used | Jumlah chunk yang digunakan sebagai context |
+| Font family | Inter, Arial, Georgia, Trebuchet MS, Courier New, Poppins, Montserrat |
+| Ukuran font | Input angka + tombol `−` / `+`, rentang 6 – 250 px |
+| **Bold** | Tombol toolbar atau `Ctrl+B` |
+| *Italic* | Tombol toolbar atau `Ctrl+I` |
+| Underline | Tombol toolbar atau `Ctrl+U` |
+| ~~Strikethrough~~ | Tombol toolbar |
+| Warna teks | Color picker dengan preview bar warna |
+| Alignment | Rata kiri / tengah / kanan / kiri-kanan |
 
-**Error:**
-- `400` — Pertanyaan kosong
-
-**Proses yang terjadi:**
-1. Pertanyaan di-embed menggunakan Gemini `gemini-embedding-001`
-2. Similarity search dilakukan di ChromaDB untuk mengambil top-K chunk
-3. Chunk yang ditemukan disusun menjadi context
-4. LangChain LCEL chain dijalankan: `PromptTemplate | ChatGroq | StrOutputParser`
-5. Jawaban beserta halaman sumber dikembalikan ke pengguna
-
----
-
-## Hasil Evaluasi
-
-Berikut hasil pengujian dengan 6 pertanyaan evaluasi dari dokumen:
-
-**1. Peran Unit Pelindungan Nasabah (Sumber: Hal. 7)**
-```
-Pertanyaan : Apa saja peran Unit Pelindungan Nasabah menurut peraturan POJK No. 22 Tahun 2023?
-Jawaban    : Unit Pelindungan Nasabah memiliki 9 peran, yaitu: 1. Mensosialisasikan prinsip
-             Pelindungan Nasabah kepada seluruh Pegawai Bank. 2. Mengoordinasikan perencanaan
-             dan pelaksanaan kepatuhan Bank... (9 poin lengkap)
-Halaman    : [7, 8]  
-```
-
-**2. Jam Penagihan (Sumber: Hal. 7)**
-```
-Pertanyaan : Jika Bank Mandiri menggunakan jasa Perusahaan Jasa Penagihan, apakah penagihan
-             boleh dilakukan pada jam 21.00?
-Jawaban    : Tidak boleh. Penagihan hanya dapat dilakukan pada pukul 08.00 sampai dengan
-             pukul 20.00 waktu wilayah domisili debitur.
-Halaman    : [5, 7]  
-```
-
-**3. Kredit Sektor Tambang & Konstruksi (Sumber: Hal. 4)**
-```
-Pertanyaan : Berapa nominal dan persentase pertumbuhan kredit di sektor tambang dan konstruksi?
-Jawaban    : Sektor tambang: Nominal Rp11.614.853 triliun, pertumbuhan 7,98%.
-             Sektor konstruksi: Nominal Rp8.264.848 triliun, pertumbuhan 8,27%.
-Halaman    : [3, 4, 5]  
-```
-
-**4. Komposisi DPK 2024 & 2025 (Sumber: Hal. 6)**
-```
-Pertanyaan : Sebutkan persentase komposisi dana pihak ketiga (DPK) di Bank Mandiri
-             pada tahun 2024 dan 2025?
-Jawaban    : Tahun 2024: Deposito Berjangka 20,57%, Tabungan 39,31%, Giro 40,12%.
-             Tahun 2025: Deposito Berjangka 29,11%, Tabungan 36,66%, Giro 34,23%.
-Halaman    : [1, 2, 3, 6]  
-```
-
-**5. Alur Penanganan Pengaduan (Sumber: Hal. 8)**
-```
-Pertanyaan : Bagaimana alur penanganan nasabah di Bank Mandiri jika terdapat laporan pengaduan?
-Jawaban    : 1. MENYAMPAIKAN PENGADUAN: Nasabah menyampaikan pengaduan melalui media masa,
-             telepon, email, media sosial, atau surat cabang. 2. VERIFIKASI & INPUT: Bank
-             menerima, memverifikasi, dan menginput pengaduan... (7 langkah lengkap)
-Halaman    : [7, 8, 9]  
-```
-
-**6. Saluran Pengaduan (Sumber: Hal. 9)**
-```
-Pertanyaan : Apa saja saluran pengaduan yang disediakan oleh Bank Mandiri?
-Jawaban    : Bank Mandiri menyediakan: 1. Mandiri Call 14000 (24 jam). 2. Akun X: mandiricare
-             dan @bankmandiri. 3. WhatsApp MITA: 0811-8414-000. 4. Website bankmandiri.co.id...
-             (9 saluran lengkap)
-Halaman    : [7, 8, 9]  
-```
+Semua teks dapat diedit langsung di browser via atribut `contenteditable`. Toolbar tersembunyi otomatis saat klik di luar elemen aktif.
 
 ---
 
 ## Keputusan Desain
 
-**Arsitektur Hybrid — Custom Parser + LangChain Orchestration**
+**Single-file architecture**
 
-Parser PDF dibuat secara custom menggunakan PyMuPDF dan Groq Vision karena Document Loader bawaan LangChain tidak mendukung ekstraksi gambar dari PDF. Bagian retrieval dan pembuatan jawaban menggunakan LangChain LCEL agar orchestration lebih terstruktur dan setiap komponen mudah diganti tanpa mengubah keseluruhan kode.
+Seluruh pipeline — pra-pemrosesan, OCR, filter, merge, estimasi gaya, hingga generasi HTML — berada dalam satu file Python. Ini menyederhanakan deployment dan distribusi; tidak ada dependency internal yang perlu dikelola.
 
-**Knowledge Injection untuk Infografis Kompleks**
+**Hybrid OCR: PaddleOCR sebagai default, EasyOCR sebagai fallback**
 
-Halaman 8 (alur penanganan pengaduan) dan halaman 9 (daftar saluran pengaduan) menggunakan deskripsi manual karena infografis yang terdiri dari panah, kotak, dan elemen visual terpisah tidak dapat dideskripsikan secara akurat oleh vision model secara otomatis. Pendekatan ini memastikan akurasi jawaban untuk pertanyaan yang sumbernya berupa infografis.
+PaddleOCR dipilih sebagai default karena akurasinya lebih tinggi, terutama untuk teks dengan variasi sudut dan ukuran. Jika PaddleOCR tidak terpasang atau gagal dijalankan, EasyOCR diaktifkan secara otomatis tanpa intervensi pengguna. EasyOCR juga secara eksplisit mendukung Bahasa Indonesia (`['en', 'id']`).
 
-**Gemini untuk Embedding, Groq untuk LLM**
+**Estimasi gaya berbasis piksel, bukan metadata**
 
-Gemini `gemini-embedding-001` dipilih untuk embedding karena kualitas semantic search-nya baik untuk Bahasa Indonesia. Groq `llama-3.3-70b-versatile` dipilih untuk LLM karena gratis, cepat, dan memiliki rate limit yang wajar sehingga cocok untuk keperluan pengembangan dan demo.
+Font size, warna teks, dan warna background diestimasi langsung dari piksel gambar menggunakan K-means clustering (k=2) dan analisis border median — bukan dari metadata file. Pendekatan ini bekerja pada gambar raster apapun tanpa memerlukan informasi tambahan.
 
-**Chunk Size 1000 dengan Overlap 200**
+**Tiga kelas elemen teks**
 
-Nilai ini dipilih sebagai keseimbangan antara konteks yang cukup per chunk dan jumlah chunk yang tidak terlalu banyak. Overlap 200 karakter memastikan informasi yang berada di batas antar chunk tidak hilang saat teks dipotong.
+Elemen diklasifikasikan menjadi tiga kelas — *hero title*, *top title area*, dan teks biasa — karena masing-masing memerlukan kalkulasi font size yang berbeda. Hero title menggunakan rumus berbasis luas area dan panjang teks; top title menggunakan perkalian langsung dari tinggi bounding box dengan faktor yang lebih besar; teks biasa menggunakan faktor konservatif dengan batas minimum dan maksimum yang ketat.
+
+**Dua mode cover: CSS vs Inpaint**
+
+Mode `css` (default) lebih cepat karena tidak memodifikasi piksel gambar — teks asli hanya "ditutup" oleh `<div>` berwarna dengan efek backdrop blur. Mode `inpaint` menghasilkan background yang lebih bersih secara visual menggunakan algoritma TELEA dari OpenCV, namun membutuhkan waktu pemrosesan lebih lama karena setiap piksel teks harus direkonstruksi dari piksel sekitarnya.
+
+**CLAHE untuk pra-pemrosesan kontras**
+
+Contrast Limited Adaptive Histogram Equalization (CLAHE) diterapkan pada channel Value (V) ruang warna HSV — bukan grayscale langsung — agar peningkatan kontras tidak mengubah saturasi warna. Ini memastikan estimasi warna downstream tetap akurat.
+
+---
+
+## Troubleshooting
+
+**PaddleOCR gagal saat instalasi**
+```bash
+pip install paddlepaddle==2.6.0
+pip install paddleocr==2.7.3
+```
+
+**Teks tidak terdeteksi / hasil terlalu sedikit**
+
+Kurangi `MIN_CONF` (misal `0.25`) dan/atau `MIN_LOCAL_CONTRAST` (misal `10.0`) di bagian konstanta. Aktifkan `--debug` untuk melihat bounding box hasil deteksi mentah.
+
+**Terlalu banyak noise terdeteksi sebagai teks**
+
+Naikkan `MIN_CONF` (misal `0.55`) dan/atau `MIN_LOCAL_CONTRAST` (misal `25.0`).
+
+**Ukuran font di HTML tidak proporsional**
+
+Sesuaikan `MIN_FONT_SIZE` dan `MAX_FONT_SIZE`. Untuk hero title, ubah faktor pengali `1.80` pada fungsi `estimate_font_size()`.
+
+**Logo atau watermark ikut terdeteksi**
+
+Pastikan `IGNORE_TOP_RIGHT_LOGO = True`. Sesuaikan `LOGO_X_START_RATIO` dan `LOGO_Y_END_RATIO` sesuai posisi logo pada gambar target Anda.
+
+**Format gambar tidak terbaca**
+
+Format yang didukung: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`. Format lain perlu dikonversi terlebih dahulu.
