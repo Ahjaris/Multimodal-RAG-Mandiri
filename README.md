@@ -200,7 +200,7 @@ Sebelum menjalankan project, pastikan sudah tersedia:
 ### 1. Clone repository
 
 ```bash
-git clone https://github.com/username/rag-mandiri.git
+git clone https://github.com/Ahjaris/Multimodal-RAG-Mandiri.git
 cd rag-mandiri
 ```
 
