@@ -41,7 +41,7 @@ def embed_query(text: str) -> list[float]:
     )
     return result.embeddings[0].values
 
-def answer_question(question: str, top_k: int = 5) -> dict:
+def answer_question(question: str, top_k: int = 2) -> dict:
     query_vector = embed_query(question)
 
     results = collection.query(
@@ -52,10 +52,14 @@ def answer_question(question: str, top_k: int = 5) -> dict:
 
     chunks = results["documents"][0]
     metadatas = results["metadatas"][0]
+    distances = results["distances"][0]  # ← tambah ini
 
     context_parts = []
     source_pages = []
-    for chunk, meta in zip(chunks, metadatas):
+
+    for chunk, meta, dist in zip(chunks, metadatas, distances):
+        if dist > 0.32:  
+            continue
         context_parts.append(f"[Halaman {meta['page']}]\n{chunk}")
         if meta["page"] not in source_pages:
             source_pages.append(meta["page"])
@@ -69,5 +73,5 @@ def answer_question(question: str, top_k: int = 5) -> dict:
         "question": question,
         "answer": answer,
         "source_pages": sorted(source_pages),
-        "chunks_used": len(chunks)
+        "chunks_used": len(context_parts)  # ← pakai len(context_parts) bukan len(chunks)
     }

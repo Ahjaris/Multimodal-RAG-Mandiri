@@ -16,7 +16,7 @@ app = FastAPI(
 # ── Models ─────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     question: str
-    top_k: int = 5
+    top_k: int = 2
 
 class QueryResponse(BaseModel):
     question: str
