@@ -53,6 +53,7 @@ Kemampuan utama project ini:
 - Membuat embedding chunk menggunakan `gemini-embedding-001`.
 - Menyimpan chunk, embedding, dan metadata halaman ke ChromaDB.
 - Melakukan semantic search terhadap pertanyaan pengguna.
+- Memfilter chunk berdasarkan distance threshold untuk meningkatkan akurasi retrieval.
 - Menjawab pertanyaan menggunakan LangChain LCEL.
 - Mengembalikan metadata halaman sumber pada setiap jawaban.
 
@@ -86,7 +87,7 @@ Kemampuan utama project ini:
 │      │                                                          │
 │      ▼                                                          │
 │  RecursiveCharacterTextSplitter                                 │
-│  - chunk_size = 1000                                            │
+│  - chunk_size = 2000                                            │
 │  - chunk_overlap = 200                                          │
 │      │                                                          │
 │      ▼                                                          │
@@ -111,8 +112,9 @@ Kemampuan utama project ini:
 │      │                                                          │
 │      ▼                                                          │
 │  ChromaDB Similarity Search                                     │
-│  - Mengambil top-K chunk paling relevan                         │
+│  - Mengambil top-K chunk paling relevan (default top_k = 2)     │
 │  - Mengambil metadata halaman sumber                            │
+│  - Memfilter chunk dengan distance > 0.32 (distance threshold)  │
 │      │                                                          │
 │      ▼                                                          │
 │  LangChain LCEL Chain                                           │
@@ -157,7 +159,7 @@ rag-mandiri/
 │   ├── ingest.py       # Pipeline ingestion: parsing, chunking, embedding, simpan ke ChromaDB
 │   ├── main.py         # FastAPI app dan definisi endpoint
 │   ├── parser.py       # Parsing PDF, ekstraksi teks, deskripsi gambar, manual injection
-│   └── query.py        # Pipeline query: embedding pertanyaan, retrieval, LLM answer
+│   └── query.py        # Pipeline query: embedding pertanyaan, retrieval, filter distance, LLM answer
 │
 ├── uploads/            # Folder penyimpanan PDF yang diupload
 ├── vectorstore/        # Folder penyimpanan ChromaDB persistent
@@ -176,7 +178,7 @@ Keterangan folder penting:
 | `app/main.py` | Berisi FastAPI app dan endpoint `/`, `/ingest`, `/query` |
 | `app/parser.py` | Mengekstrak teks dan gambar dari PDF |
 | `app/ingest.py` | Mengubah PDF menjadi chunk dan menyimpannya ke ChromaDB |
-| `app/query.py` | Mengambil chunk relevan dan menghasilkan jawaban |
+| `app/query.py` | Mengambil chunk relevan, memfilter berdasarkan distance, dan menghasilkan jawaban |
 | `uploads/` | Menyimpan PDF yang diupload user |
 | `vectorstore/` | Menyimpan database vector ChromaDB |
 | `.env` | Menyimpan `GOOGLE_API_KEY` dan `GROQ_API_KEY` |
@@ -280,7 +282,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 VECTORSTORE_PATH = "./vectorstore"
 UPLOAD_PATH = "./uploads"
 COLLECTION_NAME = "mandiri_2025"
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 200
 ```
 
@@ -361,7 +363,7 @@ Endpoint untuk mengupload dan memproses file PDF menjadi knowledge base.
 {
   "status": "success",
   "total_pages": 9,
-  "total_chunks": 41
+  "total_chunks": 23
 }
 ```
 
@@ -395,14 +397,14 @@ Endpoint untuk mengirim pertanyaan berdasarkan dokumen yang sudah diingest.
 ```json
 {
   "question": "Apa saja saluran pengaduan yang disediakan Bank Mandiri?",
-  "top_k": 5
+  "top_k": 2
 }
 ```
 
 | Field | Tipe | Default | Keterangan |
 |---|---|---:|---|
 | `question` | string | wajib | Pertanyaan pengguna |
-| `top_k` | integer | 5 | Jumlah chunk relevan yang diambil dari ChromaDB |
+| `top_k` | integer | 2 | Jumlah chunk relevan yang diambil dari ChromaDB |
 
 **Contoh response:**
 
@@ -411,7 +413,7 @@ Endpoint untuk mengirim pertanyaan berdasarkan dokumen yang sudah diingest.
   "question": "Apa saja saluran pengaduan yang disediakan Bank Mandiri?",
   "answer": "Bank Mandiri menyediakan beberapa saluran pengaduan, yaitu Mandiri Call 14000, akun X mandiricare dan @bankmandiri, WhatsApp MITA 0811-8414-000, website Bank Mandiri, Facebook, kantor cabang, email mandiricare@bankmandiri.co.id, Instagram @bankmandiri, dan surat resmi.",
   "source_pages": [9],
-  "chunks_used": 5
+  "chunks_used": 2
 }
 ```
 
@@ -426,11 +428,12 @@ Endpoint untuk mengirim pertanyaan berdasarkan dokumen yang sudah diingest.
 1. User mengirim pertanyaan.
 2. Sistem mengecek apakah pertanyaan kosong atau tidak.
 3. Pertanyaan diubah menjadi embedding menggunakan Gemini.
-4. ChromaDB mencari top-K chunk paling relevan.
-5. Chunk disusun menjadi context dengan format halaman sumber.
-6. Context dan pertanyaan dimasukkan ke prompt.
-7. ChatGroq menghasilkan jawaban.
-8. API mengembalikan jawaban, halaman sumber, dan jumlah chunk yang digunakan.
+4. ChromaDB mencari top-K chunk paling relevan (default `top_k = 2`).
+5. Chunk dengan distance > 0.32 difilter dan tidak digunakan sebagai context.
+6. Chunk yang lolos filter disusun menjadi context dengan format halaman sumber.
+7. Context dan pertanyaan dimasukkan ke prompt.
+8. ChatGroq menghasilkan jawaban.
+9. API mengembalikan jawaban, halaman sumber, dan jumlah chunk yang digunakan.
 
 ---
 
@@ -562,12 +565,12 @@ RecursiveCharacterTextSplitter
 Konfigurasi chunking:
 
 ```python
-chunk_size = 1000
+chunk_size = 2000
 chunk_overlap = 200
 separators = ["\n\n", "\n", ". ", " "]
 ```
 
-Tujuannya agar setiap chunk memiliki konteks yang cukup, tetapi tetap tidak terlalu panjang untuk proses retrieval dan LLM.
+`chunk_size` dinaikkan menjadi 2000 agar konten tabel dan data terstruktur tidak terpotong antar chunk, sehingga retrieval untuk pertanyaan yang mencakup banyak baris data menjadi lebih akurat.
 
 ---
 
@@ -650,17 +653,22 @@ collection.query(
 )
 ```
 
-Hasil retrieval berupa:
+Hasil retrieval kemudian difilter berdasarkan distance threshold:
 
-- chunk dokumen relevan,
-- metadata halaman,
-- distance similarity.
+```python
+for chunk, meta, dist in zip(chunks, metadatas, distances):
+    if dist > 0.32:
+        continue
+    # hanya chunk dengan distance <= 0.32 yang digunakan sebagai context
+```
+
+Filter ini memastikan hanya chunk yang benar-benar relevan dengan pertanyaan yang masuk ke context LLM, sehingga jawaban lebih akurat dan halaman sumber yang dilaporkan lebih tepat.
 
 ---
 
 ### 10. Answer Generation
 
-Chunk yang ditemukan disusun menjadi context:
+Chunk yang lolos filter disusun menjadi context:
 
 ```text
 [Halaman 8]
@@ -712,7 +720,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 VECTORSTORE_PATH = "./vectorstore"
 UPLOAD_PATH = "./uploads"
 COLLECTION_NAME = "mandiri_2025"
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 200
 ```
 
@@ -777,7 +785,7 @@ Tahapan `process_pdf()`:
 
 1. Parsing PDF.
 2. Menggabungkan teks halaman dengan deskripsi gambar.
-3. Memecah teks menjadi chunk.
+3. Memecah teks menjadi chunk dengan `chunk_size = 2000`.
 4. Membuat embedding semua chunk.
 5. Menyimpan chunk ke ChromaDB.
 6. Mengembalikan jumlah halaman dan chunk.
@@ -793,7 +801,7 @@ Fungsi utama:
 | Fungsi | Keterangan |
 |---|---|
 | `embed_query()` | Membuat embedding dari pertanyaan |
-| `answer_question()` | Retrieval chunk relevan dan menghasilkan jawaban |
+| `answer_question()` | Retrieval chunk relevan, filter distance, dan menghasilkan jawaban |
 
 Komponen utama:
 
@@ -805,7 +813,7 @@ llm = ChatGroq(
 )
 ```
 
-Prompt dirancang agar model hanya menjawab berdasarkan context yang diberikan. Jika jawaban tidak tersedia pada context, model diarahkan untuk mengatakan bahwa informasi tidak ditemukan dalam dokumen.
+Setelah retrieval, chunk difilter menggunakan distance threshold `0.32`. Hanya chunk dengan distance ≤ 0.32 yang dimasukkan ke context. Prompt dirancang agar model hanya menjawab berdasarkan context yang diberikan. Jika jawaban tidak tersedia pada context, model diarahkan untuk mengatakan bahwa informasi tidak ditemukan dalam dokumen.
 
 ---
 
@@ -853,13 +861,25 @@ Dengan struktur ini, prompt, model, atau parser output dapat diganti tanpa mengu
 
 ---
 
-### 7. Chunk Size 1000 dan Overlap 200
+### 7. Chunk Size 2000 dan Overlap 200
 
-Chunk size 1000 dipilih agar setiap chunk memiliki konteks yang cukup. Overlap 200 digunakan agar informasi yang berada di batas antar chunk tidak terpotong sepenuhnya.
+Chunk size dinaikkan menjadi 2000 agar tabel dan data numerik terstruktur tidak terpotong antar chunk. Dengan chunk yang lebih besar, baris-baris dalam satu tabel cenderung berada dalam chunk yang sama sehingga retrieval untuk pertanyaan berbasis data menjadi lebih lengkap dan akurat. Overlap 200 tetap dipertahankan agar informasi di batas antar chunk tidak hilang.
 
 ---
 
-### 8. Metadata Halaman Sumber
+### 8. Distance Threshold 0.32 untuk Filter Retrieval
+
+Setelah retrieval, chunk difilter menggunakan cosine distance threshold sebesar 0.32. Chunk dengan distance di atas threshold dianggap kurang relevan dan tidak dimasukkan ke context LLM. Nilai 0.32 dipilih berdasarkan observasi distribusi distance pada dokumen ini, di mana chunk yang relevan secara konsisten berada di bawah nilai tersebut. Filter ini mencegah halusinasi LLM akibat context yang tidak relevan dan membuat `source_pages` yang dilaporkan lebih akurat.
+
+---
+
+### 9. Default top_k = 2
+
+Nilai `top_k` default ditetapkan sebesar 2 untuk mengambil chunk paling relevan secara terfokus. Kombinasi `chunk_size = 2000` yang lebih besar dan `top_k = 2` memastikan context yang dikirim ke LLM padat, relevan, dan tidak melebihi batas token yang optimal.
+
+---
+
+### 10. Metadata Halaman Sumber
 
 Setiap chunk disimpan dengan metadata halaman. Metadata ini penting agar jawaban tidak hanya berisi teks, tetapi juga dapat menunjukkan halaman sumber yang digunakan.
 
@@ -919,7 +939,7 @@ Contoh request:
 ```json
 {
   "question": "Apa saja saluran pengaduan yang tersedia?",
-  "top_k": 5
+  "top_k": 2
 }
 ```
 
@@ -932,7 +952,7 @@ Contoh response:
   "question": "Apa saja saluran pengaduan yang tersedia?",
   "answer": "Saluran pengaduan yang tersedia meliputi Mandiri Call 14000, akun X mandiricare dan @bankmandiri, WhatsApp MITA, website Bank Mandiri, Facebook, kantor cabang, email, Instagram, dan surat resmi.",
   "source_pages": [9],
-  "chunks_used": 5
+  "chunks_used": 2
 }
 ```
 
@@ -940,4 +960,4 @@ Contoh response:
 
 ## Kesimpulan
 
-Project **Multimodal RAG — Bank Mandiri 2025** merupakan sistem tanya-jawab berbasis dokumen PDF yang menggabungkan parsing teks, pemahaman gambar, semantic search, vector database, dan LLM. Dengan pipeline ingestion dan query yang terpisah, sistem ini dapat memproses dokumen PDF multimodal dan memberikan jawaban dalam Bahasa Indonesia berdasarkan context dokumen yang paling relevan.
+Project **Multimodal RAG — Bank Mandiri 2025** merupakan sistem tanya-jawab berbasis dokumen PDF yang menggabungkan parsing teks, pemahaman gambar, semantic search, vector database, dan LLM. Dengan pipeline ingestion dan query yang terpisah, serta optimasi berupa chunk size 2000, distance threshold 0.32, dan top_k default 2, sistem ini dapat memproses dokumen PDF multimodal dan memberikan jawaban dalam Bahasa Indonesia berdasarkan context dokumen yang paling relevan dan akurat.
